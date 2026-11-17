@@ -1,0 +1,176 @@
+=== Collection time (UTC) ===
+2026-11-12T22:44:47+00:00
+
+=== System, device, and mount ===
+arx
+Linux 6.8.0-65-generic
+nvme0n1 KINGSTON SNV3S1000G 931.5G nvme
+/dev/nvme0n1p2 ext4   rw,relatime,errors=remount-ro
+
+=== Controller identification (serial excluded) ===
+vid       : 0x2646
+ssvid     : 0x2646
+mn        : KINGSTON SNV3S1000G                     
+fr        : P3BR0A23
+ver       : 0x10400
+
+=== NVMe SMART health (JSON) ===
+{
+  "critical_warning" : 0,
+  "temperature" : 323,
+  "avail_spare" : 85,
+  "spare_thresh" : 10,
+  "percent_used" : 0,
+  "endurance_grp_critical_warning_summary" : 0,
+  "data_units_read" : 524328,
+  "data_units_written" : 1222617,
+  "host_read_commands" : 6325122,
+  "host_write_commands" : 10316676,
+  "controller_busy_time" : 75,
+  "power_cycles" : 229,
+  "power_on_hours" : 68,
+  "unsafe_shutdowns" : 124,
+  "media_errors" : 5311,
+  "num_err_log_entries" : 0,
+  "warning_temp_time" : 0,
+  "critical_comp_time" : 0,
+  "temperature_sensor_1" : 359,
+  "temperature_sensor_2" : 333,
+  "temperature_sensor_3" : 323,
+  "thm_temp1_trans_count" : 0,
+  "thm_temp2_trans_count" : 0,
+  "thm_temp1_total_time" : 0,
+  "thm_temp2_total_time" : 0
+}
+
+=== NVMe command error log (requested up to 16 slots, JSON) ===
+{
+  "errors" : [
+    {
+      "error_count" : 0,
+      "sqid" : 0,
+      "cmdid" : 0,
+      "status_field" : 0,
+      "phase_tag" : 0,
+      "parm_error_location" : 0,
+      "lba" : 0,
+      "nsid" : 0,
+      "vs" : 0,
+      "trtype" : 0,
+      "cs" : 0,
+      "trtype_spec_info" : 0
+    },
+    {
+      "error_count" : 0,
+      "sqid" : 0,
+      "cmdid" : 0,
+      "status_field" : 0,
+      "phase_tag" : 0,
+      "parm_error_location" : 0,
+      "lba" : 0,
+      "nsid" : 0,
+      "vs" : 0,
+      "trtype" : 0,
+      "cs" : 0,
+      "trtype_spec_info" : 0
+    },
+    {
+      "error_count" : 0,
+      "sqid" : 0,
+      "cmdid" : 0,
+      "status_field" : 0,
+      "phase_tag" : 0,
+      "parm_error_location" : 0,
+      "lba" : 0,
+      "nsid" : 0,
+      "vs" : 0,
+      "trtype" : 0,
+      "cs" : 0,
+      "trtype_spec_info" : 0
+    },
+    {
+      "error_count" : 0,
+      "sqid" : 0,
+      "cmdid" : 0,
+      "status_field" : 0,
+      "phase_tag" : 0,
+      "parm_error_location" : 0,
+      "lba" : 0,
+      "nsid" : 0,
+      "vs" : 0,
+      "trtype" : 0,
+      "cs" : 0,
+      "trtype_spec_info" : 0
+    }
+  ]
+}
+
+=== Kernel storage errors from current boot (latest 40 matching lines) ===
+2026-11-12T14:21:13-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546507008, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:21:13-0800 arx kernel: critical medium error, dev nvme0n1, sector 546507008 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:21:14-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546510360, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:21:14-0800 arx kernel: critical medium error, dev nvme0n1, sector 546510360 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:21:14-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546510368, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:21:14-0800 arx kernel: critical medium error, dev nvme0n1, sector 546510368 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:21:14-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546510376, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:21:14-0800 arx kernel: critical medium error, dev nvme0n1, sector 546510376 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:21:14-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546510384, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:21:14-0800 arx kernel: critical medium error, dev nvme0n1, sector 546510384 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:21:55-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546507008, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:21:55-0800 arx kernel: critical medium error, dev nvme0n1, sector 546507008 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:21:55-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546507008, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:21:55-0800 arx kernel: critical medium error, dev nvme0n1, sector 546507008 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:21:55-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546507008, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:21:55-0800 arx kernel: critical medium error, dev nvme0n1, sector 546507008 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:22:00-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546510360, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:22:00-0800 arx kernel: critical medium error, dev nvme0n1, sector 546510360 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:22:00-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546510368, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:22:00-0800 arx kernel: critical medium error, dev nvme0n1, sector 546510368 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:22:00-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546510376, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:22:00-0800 arx kernel: critical medium error, dev nvme0n1, sector 546510376 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:22:00-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546510384, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:22:00-0800 arx kernel: critical medium error, dev nvme0n1, sector 546510384 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:22:00-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546510392, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:22:00-0800 arx kernel: critical medium error, dev nvme0n1, sector 546510392 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:22:00-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546510400, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:22:00-0800 arx kernel: critical medium error, dev nvme0n1, sector 546510400 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:22:00-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546510408, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:22:00-0800 arx kernel: critical medium error, dev nvme0n1, sector 546510408 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:22:34-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546507008, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:22:34-0800 arx kernel: critical medium error, dev nvme0n1, sector 546507008 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:22:34-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 546507008, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:22:34-0800 arx kernel: critical medium error, dev nvme0n1, sector 546507008 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:33:54-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 1662390248, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:33:54-0800 arx kernel: critical medium error, dev nvme0n1, sector 1662390248 op 0x0:(READ) flags 0x80700 phys_seg 1 prio class 0
+2026-11-12T14:33:54-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 1662390248, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:33:54-0800 arx kernel: critical medium error, dev nvme0n1, sector 1662390248 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+2026-11-12T14:36:13-0800 arx kernel: nvme0n1: I/O Cmd(0x2) @ LBA 1662390248, 8 blocks, I/O Error (sct 0x2 / sc 0x81) 
+2026-11-12T14:36:13-0800 arx kernel: critical medium error, dev nvme0n1, sector 1662390248 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+
+=== System I/O and display follow-up ===
+=== Current I/O wait ===
+    373       2       27:25 D    -                            jbd2/nvme0n1p2-8
+    453       2       27:21 D    -                            kworker/u45:5+flush-259:0
+    550       2       27:20 D    -                            kworker/u45:12+flush-259:0
+   1461    1328       27:00 SLsl do_poll.constprop.0          gnome-remote-de
+   1482       2       27:00 D    -                            kworker/6:3+events
+   1536    1328       26:59 Ssl  drm_modeset_lock             gnome-shell
+   1813    1328       26:48 Sl   do_poll.constprop.0          gnome-shell-cal
+   3736       1       22:14 SNl  -                            aptd
+   5004    3736       15:32 SNs+ -                            aptd
+   9960       2       02:33 D    -                            kworker/u45:1+flush-259:0
+  10405    5004       00:42 DNs+ -                            dpkg
+  10421   10405       00:35 SN+  -                            dpkg-deb
+  10422   10421       00:35 SN+  -                            dpkg-deb
+  10423   10421       00:35 SN+  -                            dpkg-deb
+  10452       2       00:04 D    -                            kworker/u45:2+flush-259:0
+
+some avg10=92.56 avg60=74.02 avg300=63.83 total=817519683
+full avg10=91.78 avg60=73.63 avg300=63.55 total=809779252
+NVMe requests in flight:        0       49
+
+=== GNOME display service response ===
+Error: Timeout was reached
+
+=== Current root mount ===
+/dev/nvme0n1p2 ext4   rw,relatime,errors=remount-ro

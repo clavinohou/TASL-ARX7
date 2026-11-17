@@ -1,0 +1,8 @@
+SUBSYSTEM=="tty", ATTRS{idVendor}=="16d0", ATTRS{idProduct}=="117e", ATTRS{serial}=="208A33A15931", SYMLINK+="arxcan0"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="16d0", ATTRS{idProduct}=="117e", ATTRS{serial}=="208B33585931", SYMLINK+="arxcan1"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="16d0", ATTRS{idProduct}=="117e", ATTRS{serial}=="208A33815931", SYMLINK+="arxcan5"
+
+
+
+
+
