@@ -1,0 +1,1197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARX X7s Dashboard</title>
+<style>
+:root {
+  --bg: #0c1218; --panel: #141d26; --panel-2: #1a2530; --edge: #253341; --edge-2: #33475a;
+  --ink: #eef3f7; --muted: #a8b7c4; --quiet: #7a8b9a;
+  --ok: #67dcae; --ok-ink: #0b2a1f; --busy: #ffc663; --busy-ink: #2d2105;
+  --fault: #ff8c82; --fault-ink: #33100d; --park: #8fc4ff; --park-ink: #0c2138;
+  --stop: #e5483d; --stop-hi: #ff5a4e;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", system-ui, sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 var(--sans); }
+body { min-height: 100vh; }
+button { font: inherit; color: inherit; cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .42; }
+h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: -.01em; }
+.muted { color: var(--muted); }
+.quiet { color: var(--quiet); }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* Header */
+.top { display: flex; align-items: center; gap: 14px; padding: 14px 22px; border-bottom: 1px solid var(--edge);
+  background: #0f171e; position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+.top h1 { font-size: 19px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--edge-2); color: var(--muted); font-size: 12px; white-space: nowrap; }
+.chip.live { border-color: var(--fault); color: var(--fault); font-weight: 650; }
+.chip.sim { border-color: var(--park); color: var(--park); font-weight: 650; }
+.chip.good { color: var(--ok); border-color: #2f5f4d; }
+.chip.warn { color: var(--busy); border-color: #6b5524; }
+.chip.bad { color: var(--fault); border-color: #6d302b; }
+.spacer { flex: 1; }
+.btn { border: 1px solid var(--edge-2); background: var(--panel-2); border-radius: 9px; padding: 8px 14px;
+  font-weight: 600; transition: background .1s, border-color .1s; }
+.btn:hover:not(:disabled) { border-color: #4b6378; background: #213040; }
+.btn.primary { background: var(--ok); color: var(--ok-ink); border-color: var(--ok); }
+.btn.primary:hover:not(:disabled) { background: #85ebc2; border-color: #85ebc2; }
+.btn.warn { background: var(--busy); color: var(--busy-ink); border-color: var(--busy); }
+.btn.ghost { background: transparent; }
+.btn.small { padding: 4px 10px; font-size: 12px; border-radius: 7px; }
+
+.banner { margin: 12px 22px 0; padding: 10px 14px; border-radius: 10px; font-weight: 600;
+  display: flex; gap: 12px; align-items: center; }
+[hidden] { display: none !important; }
+.banner.warn { background: #3a2c0d; color: var(--busy); border: 1px solid #6b5524; }
+.banner.bad { background: #3a1513; color: var(--fault); border: 1px solid #6d302b; }
+
+/* Layout: teleop panel on the left, the 3D world everywhere else */
+html, body { height: 100%; }
+body { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.dash { flex: 1; min-height: 0; display: grid; grid-template-columns: 410px minmax(0, 1fr); }
+.side { overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; border-right: 1px solid var(--edge);
+  background: #0e151c; scrollbar-width: thin; }
+@media (max-width: 980px) {
+  body { overflow: auto; display: block; }
+  .dash { display: flex; flex-direction: column-reverse; }
+  .side { overflow: visible; border-right: 0; padding: 12px 16px; }
+  .world { height: 70vh; min-height: 420px; }
+  .top { padding: 12px 16px; }
+}
+.card { background: var(--panel); border: 1px solid var(--edge); border-radius: 14px; padding: 14px; min-width: 0; }
+.card > header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.card > header h3 { font-size: 14px; }
+.card > header .tag { margin-left: auto; }
+.tag { font-size: 12px; font-weight: 650; padding: 2px 9px; border-radius: 6px; background: var(--panel-2);
+  color: var(--muted); border: 1px solid var(--edge); white-space: nowrap; }
+.tag.ok { background: #143528; color: var(--ok); border-color: #2f5f4d; }
+.tag.busy { background: #3a2c0d; color: var(--busy); border-color: #6b5524; }
+.tag.bad { background: #3a1513; color: var(--fault); border-color: #6d302b; }
+
+/* Status */
+.status { display: flex; flex-direction: column; gap: 10px; }
+.phase-row { display: flex; align-items: center; gap: 12px; }
+.phase-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--quiet); flex: none; }
+.phase-row h2 { font-size: 22px; }
+.timer { font: 600 13px var(--mono); color: var(--busy); }
+.notice { margin: 6px 0 0; font-size: 14px; color: var(--muted); min-height: 2.8em; }
+.status[data-tone="ok"] .phase-dot { background: var(--ok); box-shadow: 0 0 0 4px #67dcae2a; }
+.status[data-tone="ok"] h2 { color: var(--ok); }
+.status[data-tone="busy"] .phase-dot { background: var(--busy); animation: pulse 1.1s infinite; }
+.status[data-tone="busy"] h2 { color: var(--busy); }
+.status[data-tone="hold"] .phase-dot { background: var(--busy); }
+.status[data-tone="hold"] h2 { color: var(--busy); }
+.status[data-tone="park"] .phase-dot { background: var(--park); }
+.status[data-tone="park"] h2 { color: var(--park); }
+.status[data-tone="fault"] { border-color: #6d302b; }
+.status[data-tone="fault"] .phase-dot { background: var(--fault); }
+.status[data-tone="fault"] h2 { color: var(--fault); }
+@keyframes pulse { 50% { opacity: .35; } }
+.steps { list-style: none; padding: 0; margin: 10px 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 14px; font-size: 13px; }
+.steps li { display: flex; gap: 8px; align-items: center; color: var(--quiet); }
+.steps li::before { content: "○"; width: 14px; text-align: center; }
+.steps li.done { color: var(--muted); } .steps li.done::before { content: "✓"; color: var(--ok); }
+.steps li.active { color: var(--ink); font-weight: 600; } .steps li.active::before { content: "●"; color: var(--busy); animation: pulse 1.1s infinite; }
+.steps li.failed { color: var(--fault); font-weight: 600; } .steps li.failed::before { content: "✕"; }
+.actions { display: flex; flex-direction: column; gap: 8px; }
+.actions .row { display: flex; gap: 8px; }
+.actions .row .btn { flex: 1; }
+.stop { width: 100%; border: 0; border-radius: 12px; padding: 12px 18px; background: var(--stop); color: white;
+  font-weight: 800; font-size: 20px; letter-spacing: .06em; box-shadow: 0 4px 0 #8f2620; }
+.stop:hover:not(:disabled) { background: var(--stop-hi); }
+.stop:active:not(:disabled) { transform: translateY(2px); box-shadow: 0 2px 0 #8f2620; }
+.stop kbd { font: 600 12px var(--mono); opacity: .85; margin-left: 6px; letter-spacing: 0; }
+
+/* Deadman */
+.deadman { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.deadman .control-row { flex-basis: 100%; margin-top: 0; }
+.deadman > div:last-child { min-width: 0; }
+.spacebar { height: 52px; width: 120px; flex: none; border-radius: 12px; border: 2px solid var(--edge-2); background: var(--panel-2);
+  display: grid; place-items: center; font: 700 15px var(--mono); letter-spacing: .3em; color: var(--quiet);
+  transition: background .08s, border-color .08s, color .08s; }
+.deadman[data-state="active"] .spacebar { background: var(--ok); border-color: var(--ok); color: var(--ok-ink); }
+.deadman[data-state="held"] .spacebar { border-color: var(--busy); color: var(--busy); }
+.deadman[data-state="unfocused"] .spacebar { border-style: dashed; }
+.deadman-title { font-size: 15px; font-weight: 700; }
+.deadman[data-state="active"] .deadman-title { color: var(--ok); }
+.deadman[data-state="held"] .deadman-title { color: var(--busy); }
+.deadman[data-state="unfocused"] .deadman-title { color: var(--fault); }
+
+/* Keycaps */
+.keys { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin-top: 12px; }
+.key { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; min-width: 0; }
+.key span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cap { min-width: 26px; height: 26px; padding: 0 6px; border-radius: 6px; display: inline-grid; place-items: center;
+  background: var(--panel-2); border: 1px solid var(--edge-2); border-bottom-width: 3px; font: 700 12px var(--mono);
+  color: var(--ink); flex: none; }
+.cap.down { border-color: var(--busy); color: var(--busy); }
+.cap.live { background: var(--ok); color: var(--ok-ink); border-color: var(--ok); }
+
+/* Segmented controls */
+.seg { display: inline-flex; border: 1px solid var(--edge-2); border-radius: 9px; overflow: hidden; }
+.seg button { border: 0; background: transparent; padding: 6px 11px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--edge-2); }
+.seg button.on { background: #24384a; color: var(--ink); }
+.control-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.control-row .label { font-size: 12px; color: var(--quiet); min-width: 46px; }
+
+/* Chassis */
+.viz { width: 100%; height: auto; display: block; }
+#baseViz { max-height: 150px; }
+.gauge .viz { max-height: 130px; }
+.readout { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 12px; font-size: 12px; margin-top: 8px; }
+.readout dt { color: var(--quiet); }
+.readout dd { margin: 0; font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--muted); }
+.wheels { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.wheel { font: 11px var(--mono); color: var(--quiet); text-align: center; }
+.wheel .bar { height: 46px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--edge); position: relative; overflow: hidden; margin-bottom: 4px; }
+.wheel .bar::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px solid var(--edge-2); }
+.wheel .fill { position: absolute; left: 3px; right: 3px; background: var(--ok); border-radius: 3px; }
+
+/* Arms & body */
+.arm-plots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.arm-plot { border: 1px solid var(--edge); border-radius: 10px; padding: 8px; background: #111922; }
+.arm-plot.selected { border-color: #3f7b63; }
+.arm-plot h4 { margin: 0 0 4px; font-size: 12px; display: flex; justify-content: space-between; color: var(--muted); }
+.gauges { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.gauge { border: 1px solid var(--edge); border-radius: 10px; padding: 8px; background: #111922; text-align: center; }
+.gauge h4 { margin: 0; font-size: 12px; color: var(--muted); }
+.gauge .value { font: 600 13px var(--mono); margin-top: 2px; }
+.gauge .sub { font: 11px var(--mono); color: var(--quiet); }
+
+/* Log */
+.log ol { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow: auto; font-size: 13px; }
+.log li { display: grid; grid-template-columns: 58px 50px minmax(0, 1fr); gap: 8px; padding: 4px 0; border-bottom: 1px solid #1c2733; }
+.log li .t { font: 11px var(--mono); color: var(--quiet); padding-top: 2px; }
+.log li .s { font-size: 11px; color: var(--quiet); padding-top: 1px; }
+.log li.warn .m { color: var(--busy); } .log li.fault .m { color: var(--fault); font-weight: 600; }
+.log li.detail .m { color: var(--quiet); font-family: var(--mono); font-size: 12px; }
+
+/* Monitor */
+.monitor table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+.monitor th, .monitor td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #1c2733; }
+.monitor th { color: var(--quiet); font-weight: 600; }
+.monitor td { font-family: var(--mono); color: var(--muted); }
+
+/* World view */
+.world { position: relative; min-width: 0; min-height: 0; background: radial-gradient(ellipse at 50% 30%, #16222d, #090e13 70%); overflow: hidden; }
+#world { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+#world.dragging { cursor: grabbing; }
+.hud { position: absolute; background: #0c1218d9; border: 1px solid var(--edge); border-radius: 12px; padding: 10px 12px;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); font-size: 12px; }
+.hud-map { top: 14px; left: 14px; width: 300px; display: flex; flex-direction: column; gap: 8px; }
+.hud-map .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hud-map .label { color: var(--quiet); min-width: 46px; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.stat { background: #111922; border: 1px solid var(--edge); border-radius: 8px; padding: 5px 7px; min-width: 0; }
+.stat b { display: block; font: 600 13px var(--mono); color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat span { color: var(--quiet); font-size: 10.5px; }
+.hud-view { bottom: 14px; left: 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; max-width: calc(100% - 360px); }
+.feed { position: absolute; right: 14px; width: min(34%, 420px); aspect-ratio: 16 / 9; background: #05080b; border: 1px solid var(--edge-2);
+  border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px #0008; }
+.feed.top { top: 14px; } .feed.bottom { bottom: 14px; }
+.feed img { width: 100%; height: 100%; object-fit: cover; display: block; image-rendering: auto; }
+.feed .caption { position: absolute; left: 8px; top: 8px; font: 650 11px var(--sans); letter-spacing: .04em; padding: 2px 8px;
+  border-radius: 6px; background: #000a; color: var(--ink); }
+.feed .age { position: absolute; right: 8px; top: 8px; font: 11px var(--mono); color: var(--muted); background: #000a; padding: 2px 6px; border-radius: 6px; }
+.feed .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--quiet); font-size: 12px; text-align: center; padding: 12px; }
+.depth-scale { position: absolute; left: 8px; right: 8px; bottom: 8px; height: 6px; border-radius: 3px;
+  background: linear-gradient(90deg, #7a0403, #e4460a, #fbb938, #a4fc3c, #1be5b5, #4686fb, #30123b); opacity: .9; }
+.depth-labels { position: absolute; left: 8px; right: 8px; bottom: 16px; display: flex; justify-content: space-between; font: 10px var(--mono); color: var(--ink); text-shadow: 0 1px 2px #000; }
+.nogl { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); }
+@media (max-width: 980px) { .hud-map { width: 250px; } .feed { width: 40%; } .hud-view { max-width: calc(100% - 28px); bottom: auto; top: auto; } }
+
+dialog { background: var(--panel); color: var(--ink); border: 1px solid var(--edge-2); border-radius: 14px; padding: 22px;
+  max-width: 470px; width: calc(100% - 32px); box-shadow: 0 20px 60px #000a; }
+dialog::backdrop { background: #04080cb3; }
+dialog h3 { font-size: 18px; margin-bottom: 8px; }
+dialog p { color: var(--muted); margin: 0 0 18px; }
+.dialog-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>ARX X7s Controller</h1>
+  <span id="mode" class="chip">—</span>
+  <span id="link" class="chip">No link</span>
+  <span class="spacer"></span>
+  <button id="connect" class="btn" type="button">Connect</button>
+  <button id="quit" class="btn ghost" type="button">Quit app</button>
+</header>
+<div id="banner" class="banner warn" hidden></div>
+
+<div class="dash">
+<aside class="side" aria-label="Teleop">
+  <section class="card status" id="status" data-tone="idle" aria-live="polite">
+    <div>
+      <div class="phase-row"><span class="phase-dot"></span><h2 id="phase">Disconnected</h2><span id="timer" class="timer"></span></div>
+      <p id="notice" class="notice">Connect to open a controller session.</p>
+      <ol id="steps" class="steps" hidden></ol>
+    </div>
+    <div class="actions">
+      <button id="stop" class="stop" type="button">STOP<kbd>Esc</kbd></button>
+      <div class="row">
+        <button id="enable" class="btn primary" type="button">Enable</button>
+        <button id="mapping" class="btn" type="button" title="Fold both arms home and torso upright, then drive to map">Mapping mode</button>
+      </div>
+      <div class="row">
+        <button id="park" class="btn" type="button" title="Arms home, torso upright, lift down">Park</button>
+        <button id="recover" class="btn" type="button" title="Re-check feedback and hold, or restart startup">Recover</button>
+      </div>
+      <button id="takeover" class="btn warn" type="button" hidden>Take over robot</button>
+    </div>
+  </section>
+
+  <section class="card deadman" id="deadman" data-state="locked">
+    <div class="spacebar" id="spacebar">KEYS</div>
+    <div>
+      <div id="deadmanTitle" class="deadman-title">Controls locked</div>
+      <div id="deadmanHint" class="muted">Press a control key while this page has focus.</div>
+    </div>
+    <div class="control-row"><span class="label">Space</span>
+      <div class="seg" id="spaceSeg">
+        <button type="button" data-v="off" title="Control keys act while this page has focus. Esc, clicking away, or a stale page stops the robot.">Not required</button>
+        <button type="button" data-v="on" title="Hold Space for every control; releasing it brakes and holds">Hold to enable</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card chassis">
+    <header><h3>Chassis</h3><span id="chassisTag" class="tag">—</span></header>
+    <svg id="baseViz" class="viz" viewBox="0 0 260 170" role="img" aria-label="Chassis command"></svg>
+    <div class="wheels" id="wheels"></div>
+    <dl class="readout">
+      <dt>Requested</dt><dd id="requested">—</dd>
+      <dt>Sent</dt><dd id="sent">—</dd>
+    </dl>
+    <div class="control-row"><span class="label">Speed</span><div class="seg" id="speedSeg"></div><span class="quiet">− / =</span></div>
+    <div class="control-row"><span class="label">Brake</span>
+      <div class="seg" id="brakeSeg">
+        <button type="button" data-v="latched" id="brakeSmooth" title="The base slows smoothly when you let go of the drive keys, then brakes">Smooth stop</button>
+        <button type="button" data-v="pulse" title="Brake as soon as no drive key is held">On key release</button>
+      </div>
+    </div>
+    <div class="keys" id="chassisKeys"></div>
+  </section>
+
+  <section class="card arms">
+    <header><h3>Arms</h3><span id="armsTag" class="tag">—</span></header>
+    <div class="control-row" style="margin:0 0 10px"><span class="label">Move</span>
+      <div class="seg" id="armSeg">
+        <button type="button" data-v="left">Left <span class="quiet">Z</span></button>
+        <button type="button" data-v="both">Both <span class="quiet">X</span></button>
+        <button type="button" data-v="right">Right <span class="quiet">C</span></button>
+      </div>
+    </div>
+    <div class="arm-plots">
+      <div class="arm-plot" id="plot-left"><h4><span>Left</span><span id="grip-left" class="quiet">—</span></h4><svg class="viz" viewBox="0 0 150 120"></svg></div>
+      <div class="arm-plot" id="plot-right"><h4><span>Right</span><span id="grip-right" class="quiet">—</span></h4><svg class="viz" viewBox="0 0 150 120"></svg></div>
+    </div>
+    <div class="keys" id="armKeys"></div>
+  </section>
+
+  <section class="card body">
+    <header><h3>Torso, lift &amp; head</h3><span id="bodyTag" class="tag">—</span></header>
+    <div class="gauges">
+      <div class="gauge"><h4>Lift</h4><svg id="liftViz" class="viz" viewBox="0 0 80 120"></svg><div class="value" id="liftValue">—</div><div class="sub" id="liftSub"></div></div>
+      <div class="gauge"><h4>Torso pitch</h4><svg id="torsoViz" class="viz" viewBox="0 0 80 120"></svg><div class="value" id="torsoValue">—</div><div class="sub" id="torsoSub"></div></div>
+      <div class="gauge"><h4>Head pitch</h4><svg id="headViz" class="viz" viewBox="0 0 80 120"></svg><div class="value" id="headValue">—</div><div class="sub" id="headSub"></div></div>
+    </div>
+    <div class="keys" id="bodyKeys"></div>
+  </section>
+
+  <section class="card log">
+    <header><h3>Events</h3><span class="tag" id="logCount">0</span></header>
+    <ol id="log"></ol>
+  </section>
+
+  <section class="card monitor">
+    <header><h3>CAN monitor</h3><button id="monitorToggle" class="btn small" type="button" style="margin-left:auto">Start</button></header>
+    <div id="monitorNote" class="quiet">Read-only can5 feedback: wheel reports, chassis commands, and body motors.</div>
+    <div id="monitorBody"></div>
+  </section>
+</aside>
+
+<section class="world" aria-label="3D map of the robot's surroundings">
+  <canvas id="world"></canvas>
+  <div id="nogl" class="nogl" hidden>This browser could not start WebGL 2, so the 3D view is unavailable.</div>
+
+  <div class="hud hud-map">
+    <div class="row"><strong style="font-size:13px">Live map</strong><span id="trackChip" class="chip" style="margin-left:auto">Camera off</span></div>
+    <div class="row">
+      <button id="cameraToggle" class="btn small" type="button">Start camera</button>
+      <button id="mapReset" class="btn small ghost" type="button" title="Clear the map on the robot and here">Reset</button>
+      <button id="mapSave" class="btn small ghost" type="button" title="Save the map as a .ply file on the robot">Save .ply</button>
+    </div>
+    <div class="row"><span class="label">Build</span>
+      <div class="seg" id="mapSeg">
+        <button type="button" data-v="auto" title="Build the map only in mapping mode, with the arms folded out of view">Auto</button>
+        <button type="button" data-v="on" title="Always build the map. Arms in view will be mapped too.">On</button>
+        <button type="button" data-v="off" title="Do not add to the map">Off</button>
+      </div>
+    </div>
+    <div class="stats">
+      <div class="stat"><b id="statVoxels">0</b><span>voxels</span></div>
+      <div class="stat"><b id="statFps">—</b><span>camera fps</span></div>
+      <div class="stat"><b id="statPos">—</b><span>position m</span></div>
+    </div>
+    <div class="row mono"><span id="hudPhase" style="font-family:var(--sans);font-weight:700">—</span><span id="hudVel" class="muted">—</span></div>
+    <div id="mapNote" class="quiet">Start the camera to see the feeds and build the map.</div>
+  </div>
+
+
+  <div class="hud hud-view">
+    <div class="seg" id="viewSeg">
+      <button type="button" data-v="chase" title="Follow behind the robot">Chase</button>
+      <button type="button" data-v="top" title="Top-down, robot heading up">Top</button>
+      <button type="button" data-v="orbit" title="Orbit around the robot">Orbit</button>
+    </div>
+    <span class="quiet">Drag to look around · scroll to zoom · double-click to recenter</span>
+  </div>
+
+  <figure class="feed top" style="margin:0">
+    <img id="feedColor" alt="Live color feed from the ZED Mini" hidden>
+    <div class="empty" id="feedColorEmpty">Color feed<br>Camera off</div>
+    <span class="caption">RGB</span><span class="age" id="feedColorAge"></span>
+  </figure>
+  <figure class="feed bottom" style="margin:0">
+    <img id="feedDepth" alt="Live depth view from the ZED Mini" hidden>
+    <div class="empty" id="feedDepthEmpty">Depth view<br>Camera off</div>
+    <span class="caption">DEPTH</span><span class="age" id="feedDepthAge"></span>
+    <div class="depth-labels"><span>0.3 m</span><span>4 m</span></div><div class="depth-scale"></div>
+  </figure>
+</section>
+</div>
+
+<dialog id="dialog"><h3 id="dialogTitle"></h3><p id="dialogBody"></p><div class="dialog-actions" id="dialogActions"></div></dialog>
+
+<script>
+"use strict";
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+const CLIENT = (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()).slice(2);
+const $ = (id) => document.getElementById(id);
+
+const CODES = { KeyW: "w", KeyA: "a", KeyS: "s", KeyD: "d", ArrowLeft: "left", ArrowRight: "right",
+  KeyI: "i", KeyK: "k", KeyJ: "j", KeyL: "l", KeyU: "u", KeyO: "o", KeyR: "r", KeyF: "f", KeyQ: "q", KeyE: "e",
+  KeyG: "g", KeyH: "h", Digit1: "1", Digit2: "2", Space: "space" };
+const SHORTCUTS = { Minus: ["speed", -1], Equal: ["speed", 1], KeyZ: ["arms", "left"], KeyX: ["arms", "both"], KeyC: ["arms", "right"] };
+const CHASSIS_KEYS = [["w", "W", "Forward"], ["s", "S", "Back"], ["a", "A", "Strafe left"], ["d", "D", "Strafe right"], ["left", "←", "Turn left"], ["right", "→", "Turn right"]];
+const ARM_KEYS = [["i", "I", "Up"], ["k", "K", "Down"], ["j", "J", "Left"], ["l", "L", "Right"], ["u", "U", "Forward"], ["o", "O", "Back"], ["g", "G", "Open gripper"], ["h", "H", "Close gripper"]];
+const BODY_KEYS = [["r", "R", "Raise lift"], ["f", "F", "Lower lift"], ["q", "Q", "Tilt torso"], ["e", "E", "Toward upright"], ["1", "1", "Head pitch +"], ["2", "2", "Head pitch −"]];
+const PHASES = {
+  offline: ["Disconnected", "idle"], connecting: ["Connecting", "busy"], idle: ["Standby", "idle"],
+  homing: ["Starting up", "busy"], resting: ["Moving to rest", "busy"], ready: ["Ready", "ok"],
+  paused: ["Paused", "hold"], parking: ["Parking", "busy"], parked: ["Parked", "park"],
+  stowing: ["Folding arms", "busy"], mapping: ["Mapping mode", "ok"],
+  fault: ["Motion locked", "fault"], interrupted: ["Connection interrupted", "fault"],
+};
+
+let snap = null, renderQueued = false, appOnline = false, logSeq = 0;
+const held = new Set();
+let spaceTainted = false;
+
+// Networking -------------------------------------------------------------------
+function post(path, body) {
+  return fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-ARX-Token": TOKEN },
+    body: JSON.stringify(Object.assign({ client: CLIENT }, body)), keepalive: true })
+    .then((r) => r.json()).catch(() => ({ ok: false, error: "The controller app is not responding." }));
+}
+function focused() { return document.hasFocus() && document.visibilityState === "visible" && !$("dialog").open; }
+function pushInput() { post("/api/input", { keys: [...held], focused: focused() }); }
+async function command(op, value) {
+  const result = await post("/api/command", { op, value });
+  if (!result.ok && result.error) flash(result.error);
+  return result;
+}
+setInterval(pushInput, 50);
+
+function connectEvents() {
+  const source = new EventSource(`/events?t=${encodeURIComponent(TOKEN)}&since=${logSeq}`);
+  source.onmessage = (event) => { appOnline = true; snap = JSON.parse(event.data); addLog(snap.log); queueRender(); };
+  source.addEventListener("closed", () => { appOnline = false; source.close(); queueRender(); });
+  source.onerror = () => { appOnline = false; queueRender(); };
+}
+command("claim");
+connectEvents();
+
+// Keyboard ---------------------------------------------------------------------
+function clearKeys() { if (held.size) { held.clear(); } spaceTainted = false; pushInput(); }
+window.addEventListener("keydown", (e) => {
+  if ($("dialog").open) {
+    if (e.code === "Space" || e.code === "Enter") e.preventDefault();  // confirm only by clicking
+    if (e.code === "Escape") command("stop");
+    return;
+  }
+  if (e.key === "Meta" || e.key === "Control" || e.key === "Alt") { clearKeys(); return; }
+  if (e.code === "Escape") { e.preventDefault(); command("stop"); return; }
+  const shortcut = SHORTCUTS[e.code];
+  if (shortcut && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    e.preventDefault();
+    if (e.repeat || !snap) return;
+    if (shortcut[0] === "speed") {
+      const levels = (snap.robot.speed_levels || [0.15, 0.2, 0.25]).length;
+      command("speed", Math.max(0, Math.min(levels - 1, snap.app.speed + shortcut[1])));
+    } else command("arms", shortcut[1]);
+    return;
+  }
+  const key = CODES[e.code];
+  if (!key) return;
+  e.preventDefault();
+  if (e.repeat) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) { if (key === "space") spaceTainted = true; return; }
+  if (key === "space" && spaceTainted) return;
+  held.add(key);
+  pushInput();
+  queueRender();
+}, true);
+window.addEventListener("keyup", (e) => {
+  const key = CODES[e.code];
+  if (e.key === "Meta" || e.key === "Control" || e.key === "Alt") { clearKeys(); return; }
+  if (!key) return;
+  e.preventDefault();
+  held.delete(key);
+  if (key === "space") spaceTainted = false;
+  pushInput();
+  queueRender();
+}, true);
+window.addEventListener("blur", () => { clearKeys(); queueRender(); });
+window.addEventListener("focus", () => { pushInput(); queueRender(); });
+document.addEventListener("visibilitychange", () => { clearKeys(); queueRender(); });
+document.addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) b.blur(); });
+
+// Dialog -------------------------------------------------------------------------
+function ask(title, body, buttons) {
+  return new Promise((resolve) => {
+    const dialog = $("dialog");
+    clearKeys();
+    $("dialogTitle").textContent = title;
+    $("dialogBody").textContent = body;
+    const actions = $("dialogActions");
+    actions.replaceChildren();
+    for (const [label, value, kind] of [["Cancel", null, "ghost"], ...buttons]) {
+      const button = document.createElement("button");
+      button.type = "button"; button.className = `btn ${kind || ""}`; button.textContent = label;
+      button.onclick = () => { dialog.close(); resolve(value); };
+      actions.append(button);
+    }
+    dialog.oncancel = () => resolve(null);
+    dialog.showModal();
+    actions.firstChild.focus();
+  });
+}
+let flashTimer = null;
+function flash(text) {
+  const banner = $("banner");
+  banner.textContent = text; banner.className = "banner warn"; banner.hidden = false;
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { flashTimer = null; queueRender(); }, 4000);
+}
+
+// Buttons ---------------------------------------------------------------------------
+const live = () => snap && !snap.app.simulation;
+const DRIVE_PHASES = ["ready", "mapping"];
+$("stop").onclick = () => command("stop");
+$("connect").onclick = async () => {
+  if (!snap) return;
+  if (!snap.app.connected) return command("connect");
+  if (await confirmRelease("Disconnect")) command("disconnect");
+};
+$("quit").onclick = async () => { if (!snap || !snap.app.connected || await confirmRelease("Quit")) command("quit"); };
+$("enable").onclick = async () => {
+  const phase = snap && snap.phase;
+  if (live() && phase === "idle" && await ask("Enable physical hardware?", "Startup homes both arms in parallel and calibrates the lift and torso, then moves to the resting pose. Confirm the robot is in view, the area is clear, and someone has the physical stop.", [["Enable", true, "primary"]]) !== true) return;
+  if (live() && ["parked", "mapping"].includes(phase) && await ask("Return to the resting pose?", "The arms move out from home and the lift rises slightly.", [["Return to rest", true, "primary"]]) !== true) return;
+  command("enable");
+};
+$("park").onclick = async () => {
+  if (live() && await ask("Park the robot?", "Both arms go home, the torso returns upright, and the lift lowers to its bottom position. Keep the area clear until it shows Parked.", [["Park", true, "primary"]]) !== true) return;
+  command("park");
+};
+$("mapping").onclick = async () => {
+  if (live() && await ask("Enter mapping mode?", "Both arms fold to home and the torso returns upright. The lift stays where it is. Keep the area around the arms clear. Afterwards W/A/S/D/arrows drive; arm, gripper, and torso keys are off until you return to rest.", [["Fold arms", true, "primary"]]) !== true) return;
+  command("map");
+};
+$("recover").onclick = async () => {
+  const restart = snap && !snap.robot.startup_complete;
+  if (live() && restart && await ask("Restart startup?", "Startup did not finish, so recovery restarts homing for both arms.", [["Restart startup", true, "primary"]]) !== true) return;
+  command("recover");
+};
+$("takeover").onclick = async () => {
+  if (await ask("Take over the robot?", "A previous controller session is still running and holding the robot. Taking over stops it, which can release motor torque. Support the arms, lift, and torso first. You will need to Enable again.", [["Take over", true, "warn"]]) === true) command("takeover");
+};
+$("monitorToggle").onclick = () => command("monitor", !(snap && snap.app.monitor_on));
+$("spaceSeg").onclick = async (e) => {
+  const b = e.target.closest("button"); if (!b || !snap) return;
+  const on = b.dataset.v === "on";
+  if (on === snap.app.require_space) return;
+  if (!on && live() && await ask("Stop requiring Space?", "Control keys will move the robot as soon as you press them while this page has focus. Esc, STOP, clicking another window, or a lost link still stops it.", [["Don't require Space", true, "warn"]]) !== true) return;
+  command("require_space", on);
+};
+$("brakeSeg").onclick = (e) => { const b = e.target.closest("button"); if (b) command("drive_mode", b.dataset.v); };
+$("armSeg").onclick = (e) => { const b = e.target.closest("button"); if (b) command("arms", b.dataset.v); };
+$("speedSeg").onclick = (e) => { const b = e.target.closest("button"); if (b) command("speed", Number(b.dataset.v)); };
+
+async function confirmRelease(verb) {
+  if (!live() || !snap.app.live_started) return true;
+  if (snap.phase === "parked") {
+    return await ask(`${verb}?`, "The robot is parked. Disconnecting can still release motor torque at the parked pose.", [[verb, true, "primary"]]) === true;
+  }
+  const choice = await ask(`${verb} without parking?`, "Disconnecting can release motor torque wherever the robot is now. Park first, or support the arms, lift, and torso before continuing.",
+    [["Park first", "park", "primary"], [`${verb} anyway`, "go", "warn"]]);
+  if (choice === "park") { if (["ready", "paused"].includes(snap.phase)) command("park"); else flash("Park is available from Ready or Paused."); return false; }
+  return choice === "go";
+}
+
+// Static key legends ------------------------------------------------------------------
+function legend(id, keys) {
+  $(id).innerHTML = keys.map(([key, cap, label]) => `<div class="key"><span class="cap" data-key="${key}">${cap}</span><span>${label}</span></div>`).join("");
+}
+legend("chassisKeys", CHASSIS_KEYS); legend("armKeys", ARM_KEYS); legend("bodyKeys", BODY_KEYS);
+
+// Log -------------------------------------------------------------------------------------
+const logEntries = [];
+function addLog(entries) {
+  if (!entries || !entries.length) return;
+  for (const entry of entries) if (entry.seq > logSeq) { logEntries.push(entry); logSeq = entry.seq; }
+  while (logEntries.length > 300) logEntries.shift();
+  const list = $("log");
+  list.replaceChildren(...logEntries.slice().reverse().map((entry) => {
+    const item = document.createElement("li");
+    item.className = entry.level;
+    item.innerHTML = `<span class="t"></span><span class="s"></span><span class="m"></span>`;
+    item.children[0].textContent = entry.time;
+    item.children[1].textContent = entry.source === "robot" ? "robot" : entry.source === "camera" ? "camera" : "mac";
+    item.children[2].textContent = entry.text;
+    return item;
+  }));
+  $("logCount").textContent = String(logEntries.length);
+}
+
+// Rendering ------------------------------------------------------------------------------
+// A timer instead of requestAnimationFrame: browsers throttle animation frames in
+// partly covered windows, which would leave button states stale.
+function queueRender() { if (!renderQueued) { renderQueued = true; setTimeout(render, 16); } }
+const fmt = (value, digits = 2, unit = "") => (value === undefined || value === null || Number.isNaN(value)) ? "—" : `${Number(value).toFixed(digits)}${unit}`;
+const signed = (value, digits = 2) => (value === undefined || value === null) ? "—" : `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(digits)}`;
+
+function render() {
+  renderQueued = false;
+  const s = snap;
+  const banner = $("banner");
+  if (!flashTimer) {
+    banner.hidden = true;
+    if (!appOnline) { banner.hidden = false; banner.className = "banner bad"; banner.textContent = "The controller app is not running. Reopen it from its launcher in Finder."; }
+    else if (s && s.app.owner !== CLIENT) {
+      banner.hidden = false; banner.className = "banner warn";
+      if (!$("claim")) {  // rebuild only when needed, so the button stays clickable
+        banner.innerHTML = `Another tab has control of the robot. <button class="btn small" type="button" id="claim">Use this tab</button>`;
+        $("claim").onclick = () => command("claim");
+      }
+    }
+  }
+  if (!s) return;
+  const app = s.app, robot = s.robot || {}, phase = s.phase;
+
+  // Header
+  const mode = $("mode");
+  mode.textContent = app.simulation ? "SIMULATOR" : `LIVE · ${app.robot}`;
+  mode.className = `chip ${app.simulation ? "sim" : "live"}`;
+  const link = $("link");
+  if (!app.connected) { link.textContent = app.connecting ? "Connecting…" : "No link"; link.className = "chip"; }
+  else if (app.waiting) { link.textContent = `No status for ${fmt(app.status_age, 1)} s`; link.className = "chip bad"; }
+  else {
+    const rtt = robot.rtt_ms, hz = app.status_hz;
+    link.textContent = `RTT ${rtt == null ? "—" : Math.round(rtt)} ms · ${hz == null ? "—" : Math.round(hz)} Hz`;
+    link.className = `chip ${rtt > 200 || (hz && hz < 12) ? "bad" : rtt > 120 || (hz && hz < 17) ? "warn" : "good"}`;
+  }
+  $("connect").textContent = app.connected ? "Disconnect" : app.connecting ? "Connecting…" : "Connect";
+  $("connect").disabled = app.connecting;
+
+  // Status
+  const [label, tone] = PHASES[phase] || [phase, "idle"];
+  $("status").dataset.tone = tone;
+  $("phase").textContent = label;
+  $("timer").textContent = robot.time_left != null ? `${Math.ceil(robot.time_left)} s left` : "";
+  let notice = robot.notice || (app.connected ? "Opening controller session…" : "Connect to open a controller session.");
+  if (!app.connected && app.busy) notice = app.busy.bridge ? "A previous controller session is still running on the robot and holding it." : "Another robot program is using the controls.";
+  if (app.pending_op) notice = `${app.pending_op[0].toUpperCase()}${app.pending_op.slice(1)} requested…`;
+  $("notice").textContent = notice;
+  const steps = $("steps");
+  const showSteps = robot.startup && (["homing", "resting"].includes(phase) || (phase === "fault" && !robot.startup_complete));
+  steps.hidden = !showSteps;
+  if (showSteps) steps.innerHTML = robot.startup.map(([text, state]) => `<li class="${state}">${text}</li>`).join("");
+
+  const connected = app.connected && !app.waiting && !app.pending_op;
+  $("stop").disabled = !app.connected;
+  const enable = $("enable");
+  enable.textContent = phase === "paused" ? "Resume" : ["parked", "mapping"].includes(phase) ? "Return to rest" : "Enable";
+  enable.disabled = !(connected && ["idle", "paused", "parked", "mapping"].includes(phase));
+  $("park").disabled = !(connected && ["ready", "paused", "mapping"].includes(phase));
+  $("mapping").disabled = !(connected && ["ready", "paused"].includes(phase));
+  $("recover").disabled = !(connected && phase === "fault" && robot.recoverable);
+  $("takeover").hidden = !(app.busy && app.busy.bridge && !app.connected);
+
+  // Deadman
+  const deadman = $("deadman");
+  const pageFocused = focused();
+  let state = "locked", title = "Controls locked", hint = "Available when the robot is Ready.";
+  if (DRIVE_PHASES.includes(phase) && !app.waiting) {
+    const anyKey = [...held].some((key) => key !== "space");
+    if (!pageFocused) { state = "unfocused"; title = "Click this window to control"; hint = "Keys only work while this page has focus."; }
+    else if (!app.require_space) {
+      if (robot.release_required && anyKey) { state = "held"; title = "Release all keys"; hint = "The robot ignores keys held through a stop, warning, or phase change."; }
+      else if (app.deadman) { state = "active"; title = "Live input"; hint = robot.armed ? "Driving. Let go of the keys to stop." : phase === "mapping" ? "Mapping mode: drive, lift, and head pitch. Esc stops." : "Keys act immediately. Esc stops."; }
+      else { state = "ready"; title = "Ready"; hint = "Press a control key."; }
+    }
+    else if (app.deadman && robot.release_required) { state = "held"; title = "Release Space, then hold it again"; hint = "The robot ignored input after the last stop or warning."; }
+    else if (app.deadman) { state = "active"; title = "Live input"; hint = robot.armed ? "Chassis in drive mode. Release Space to brake." : "Press a control key. Release Space to stop."; }
+    else if (app.space_blocked) { state = "held"; title = "Release Space to arm"; hint = "Space was already held when the robot became ready."; }
+    else { state = "ready"; title = phase === "mapping" ? "Hold Space to drive" : "Hold Space to use the controls"; hint = phase === "mapping" ? "Mapping mode: drive, lift, and head pitch only." : "Keys pressed before Space are ignored until pressed again."; }
+  } else if (phase === "parked") { hint = "Parked. Enable returns to the resting pose."; }
+  else if (phase === "fault") { hint = robot.recoverable ? "Press Recover once the cause is clear." : "Not recoverable. Support the robot, then reconnect."; }
+  deadman.dataset.state = state;
+  $("deadmanTitle").textContent = title;
+  $("deadmanHint").textContent = hint;
+  const liveKeys = new Set(app.deadman && !robot.release_required ? app.armed_keys.concat(app.require_space ? ["space"] : []) : []);
+  $("spacebar").textContent = app.require_space ? "SPACE" : "KEYS";
+  [...$("spaceSeg").children].forEach((b) => b.className = (b.dataset.v === "on") === !!app.require_space ? "on" : "");
+  $("brakeSmooth").textContent = app.require_space ? "On Space release" : "Smooth stop";
+  for (const cap of document.querySelectorAll(".cap[data-key]")) {
+    const key = cap.dataset.key;
+    cap.className = `cap${liveKeys.has(key) ? " live" : held.has(key) ? " down" : ""}`;
+  }
+
+  renderChassis(app, robot);
+  renderArms(app, robot, phase);
+  renderBody(robot, phase);
+  renderMonitor(app);
+  renderMapHud(app, robot, phase);
+}
+
+function renderChassis(app, robot) {
+  const levels = robot.speed_levels || [0.15, 0.2, 0.25];
+  const yawPer = robot.yaw_per_linear || 2;
+  const seg = $("speedSeg");
+  if (seg.children.length !== levels.length) seg.innerHTML = levels.map((v, i) => `<button type="button" data-v="${i}">${v.toFixed(2)} m/s</button>`).join("");
+  [...seg.children].forEach((b, i) => { b.className = i === app.speed ? "on" : ""; b.title = `${levels[i].toFixed(2)} m/s, turn ${(levels[i] * yawPer).toFixed(2)} rad/s`; });
+  [...$("brakeSeg").children].forEach((b) => b.className = b.dataset.v === app.drive_mode ? "on" : "");
+  const tag = $("chassisTag");
+  if (robot.wheel_warning) { tag.textContent = robot.wheel_warning; tag.className = "tag bad"; }
+  else if (robot.armed) { tag.textContent = "Drive mode"; tag.className = "tag ok"; }
+  else if (robot.started) { tag.textContent = "Braked"; tag.className = "tag"; }
+  else { tag.textContent = "Idle"; tag.className = "tag"; }
+  const req = robot.velocity || [0, 0, 0], cmd = robot.command || [0, 0, 0];
+  $("requested").textContent = `x ${signed(req[0])}  y ${signed(req[1])} m/s  yaw ${signed(req[2])} rad/s`;
+  $("sent").textContent = `x ${signed(cmd[0])}  y ${signed(cmd[1])} m/s  yaw ${signed(cmd[2])} rad/s  ·  mode ${robot.armed ? 1 : 2}`;
+
+  // Top view: forward is up, +y (left) is left.
+  const max = 0.3, cx = 130, cy = 85, scale = 62 / max;
+  const arrow = (v, color, width) => {
+    const dx = -v[1] * scale, dy = -v[0] * scale;
+    if (Math.hypot(dx, dy) < 1.5) return "";
+    const angle = Math.atan2(dy, dx), tip = [cx + dx, cy + dy];
+    const h1 = [tip[0] - 9 * Math.cos(angle - 0.45), tip[1] - 9 * Math.sin(angle - 0.45)];
+    const h2 = [tip[0] - 9 * Math.cos(angle + 0.45), tip[1] - 9 * Math.sin(angle + 0.45)];
+    return `<line x1="${cx}" y1="${cy}" x2="${tip[0]}" y2="${tip[1]}" stroke="${color}" stroke-width="${width}" stroke-linecap="round"/>
+      <path d="M${h1} L${tip} L${h2}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round"/>`;
+  };
+  const yawArc = (yaw, color) => {
+    if (Math.abs(yaw) < 0.01) return "";
+    const r = 52, sweep = Math.max(-1, Math.min(1, yaw / 0.6)) * 1.6;
+    const a0 = -Math.PI / 2, a1 = a0 - sweep;
+    const p0 = [cx + r * Math.cos(a0), cy + r * Math.sin(a0)], p1 = [cx + r * Math.cos(a1), cy + r * Math.sin(a1)];
+    return `<path d="M${p0} A${r} ${r} 0 0 ${sweep > 0 ? 0 : 1} ${p1}" fill="none" stroke="${color}" stroke-width="4" stroke-linecap="round"/>
+      <circle cx="${p1[0]}" cy="${p1[1]}" r="4" fill="${color}"/>`;
+  };
+  const body = robot.armed ? "#67dcae" : "#3a4c5d";
+  $("baseViz").innerHTML = `
+    <circle cx="${cx}" cy="${cy}" r="${0.15 * scale}" fill="none" stroke="#253341" stroke-dasharray="3 4"/>
+    <circle cx="${cx}" cy="${cy}" r="${0.3 * scale}" fill="none" stroke="#253341" stroke-dasharray="3 4"/>
+    <rect x="${cx - 26}" y="${cy - 32}" width="52" height="64" rx="10" fill="#18232e" stroke="${body}" stroke-width="2"/>
+    <path d="M${cx - 8} ${cy - 22} L${cx} ${cy - 30} L${cx + 8} ${cy - 22}" fill="none" stroke="${body}" stroke-width="2"/>
+    ${[[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([sx, sy]) => `<rect x="${cx + sx * 30 - 5}" y="${cy + sy * 22 - 9}" width="10" height="18" rx="3" fill="#2a3a49"/>`).join("")}
+    ${yawArc(req[2], "#4b6378")}${yawArc(cmd[2], "#ffc663")}
+    ${arrow(req, "#4b6378", 3)}${arrow(cmd, "#ffc663", 4)}
+    <text x="8" y="16" fill="#7a8b9a" font-size="10" font-family="ui-monospace,Menlo">gray requested · amber sent</text>
+    <text x="${cx + 0.3 * scale + 3}" y="${cy + 3}" fill="#7a8b9a" font-size="9" font-family="ui-monospace,Menlo">0.3</text>`;
+  const wheels = robot.wheels;
+  $("wheels").innerHTML = [0, 1, 2, 3].map((i) => {
+    const value = wheels ? wheels[i] : null;
+    const h = value == null ? 0 : Math.min(1, Math.abs(value) / 3) * 20;
+    const fill = value == null ? "" : `<div class="fill" style="height:${h}px;${value >= 0 ? `bottom:23px` : `top:23px`}"></div>`;
+    return `<div class="wheel"><div class="bar">${fill}</div>W${i + 1} ${value == null ? "—" : signed(value)}</div>`;
+  }).join("");
+}
+
+function armSvg(offset, limit, selected, moving) {
+  const c = [60, 60], r = 46, s = r / limit;
+  let marker = `<text x="${c[0]}" y="${c[1] + 4}" text-anchor="middle" fill="#7a8b9a" font-size="10">no data</text>`;
+  let zbar = "";
+  if (offset) {
+    const [x, y, z] = offset;
+    const px = c[0] - y * s, py = c[1] - x * s;
+    const zy = c[1] - Math.max(-limit, Math.min(limit, z)) * s;
+    const near = Math.hypot(x, y, z) > limit * 0.8;
+    const color = near ? "#ffc663" : moving ? "#8fc4ff" : "#67dcae";
+    marker = `<line x1="${c[0]}" y1="${c[1]}" x2="${px}" y2="${py}" stroke="${color}" stroke-opacity=".4"/>
+      <circle cx="${px}" cy="${py}" r="5.5" fill="${color}"/>`;
+    zbar = `<rect x="128" y="${Math.min(zy, c[1])}" width="10" height="${Math.abs(zy - c[1]) || 1}" rx="2" fill="${color}"/>`;
+  }
+  return `<circle cx="${c[0]}" cy="${c[1]}" r="${r}" fill="${selected ? "#132a22" : "#121b24"}" stroke="${selected ? "#3f7b63" : "#253341"}"/>
+    <line x1="${c[0] - r}" y1="${c[1]}" x2="${c[0] + r}" y2="${c[1]}" stroke="#253341"/>
+    <line x1="${c[0]}" y1="${c[1] - r}" x2="${c[0]}" y2="${c[1] + r}" stroke="#253341"/>
+    <text x="${c[0]}" y="10" text-anchor="middle" fill="#7a8b9a" font-size="9">forward</text>
+    <rect x="128" y="${c[1] - r}" width="10" height="${2 * r}" rx="3" fill="#121b24" stroke="#253341"/>
+    <line x1="124" y1="${c[1]}" x2="142" y2="${c[1]}" stroke="#33475a"/>
+    <text x="133" y="${c[1] + r + 11}" text-anchor="middle" fill="#7a8b9a" font-size="9">z</text>
+    ${zbar}${marker}`;
+}
+
+function renderArms(app, robot, phase) {
+  const limit = robot.arm_limit_mm || 25;
+  [...$("armSeg").children].forEach((b) => b.className = b.dataset.v === app.selection ? "on" : "");
+  for (const side of ["left", "right"]) {
+    const selected = app.selection === "both" || app.selection === side;
+    const offset = robot.offsets && robot.offsets[side];
+    const moving = (robot.arms_moving || []).includes(side);
+    const plot = $(`plot-${side}`);
+    plot.className = `arm-plot${selected ? " selected" : ""}`;
+    plot.querySelector("svg").innerHTML = armSvg(offset, limit, selected, moving);
+    const status = robot.arms && robot.arms[side];
+    const grip = robot.gripper && robot.gripper[side];
+    const distance = offset ? `${Math.hypot(...offset).toFixed(1)} / ${limit} mm` : "";
+    $(`grip-${side}`).textContent = [status, distance, grip && grip !== "—" ? grip.toLowerCase() : ""].filter(Boolean).join(" · ") || "—";
+  }
+  const tag = $("armsTag");
+  const moving = robot.arms_moving || [];
+  tag.textContent = moving.length ? "Moving" : phase === "mapping" ? "Folded" : phase === "stowing" ? "Folding" : robot.offsets && Object.keys(robot.offsets).length ? "Holding" : phase === "parked" ? "Home" : "—";
+  tag.className = `tag ${moving.length ? "busy" : ""}`;
+}
+
+function gauge(id, value, target, range, scaleMax, vertical) {
+  const top = 8, bottom = 112, x = 30, w = 20;
+  const y = (v) => bottom - Math.max(0, Math.min(1, v / scaleMax)) * (bottom - top);
+  let parts = `<rect x="${x}" y="${top}" width="${w}" height="${bottom - top}" rx="5" fill="#121b24" stroke="#253341"/>`;
+  if (range) parts += `<rect x="${x - 4}" y="${y(range[1])}" width="${w + 8}" height="${Math.max(1, y(range[0]) - y(range[1]))}" rx="3" fill="none" stroke="#3f7b63" stroke-dasharray="3 3"/>`;
+  if (value != null) parts += `<rect x="${x + 3}" y="${y(value)}" width="${w - 6}" height="${bottom - y(value)}" rx="3" fill="#67dcae" fill-opacity=".85"/>`;
+  if (target != null) parts += `<path d="M${x + w + 2} ${y(target)} l8 -5 v10 z" fill="#ffc663"/>`;
+  $(id).innerHTML = parts;
+}
+
+function renderBody(robot, phase) {
+  const body = robot.body || {}, targets = robot.body_targets || {}, ranges = robot.body_ranges || {};
+  const moving = robot.body_moving || [];
+  gauge("liftViz", body.lift, targets.lift, ranges.lift, Math.max(0.8, (ranges.lift || [0, 0])[1] * 1.15));
+  gauge("torsoViz", body.torso, targets.torso, ranges.torso, 0.16);
+  gauge("headViz", body.head, targets.head, ranges.head, 0.8);
+  $("liftValue").textContent = fmt(body.lift);
+  $("liftSub").textContent = `target ${fmt(targets.lift)} · SDK units`;
+  $("torsoValue").textContent = body.torso == null ? "—" : `${body.torso.toFixed(3)} rad`;
+  $("torsoSub").textContent = body.torso == null ? "" : `${(body.torso * 180 / Math.PI).toFixed(1)}° · target ${fmt(targets.torso, 3)}`;
+  $("headValue").textContent = body.head == null ? "—" : `${body.head.toFixed(2)} rad`;
+  $("headSub").textContent = targets.head == null ? "not jogged" : `target ${fmt(targets.head)}`;
+  const tag = $("bodyTag");
+  tag.textContent = moving.length ? `Moving ${moving.join(", ")}` : body.lift != null ? (phase === "homing" ? "Calibrated" : "Holding") : phase === "homing" ? "Calibrating" : "—";
+  tag.className = `tag ${moving.length || (phase === "homing" && body.lift == null) ? "busy" : ""}`;
+}
+
+function renderMonitor(app) {
+  $("monitorToggle").textContent = app.monitor_on ? "Stop" : "Start";
+  $("monitorToggle").disabled = app.simulation;
+  const m = app.monitor;
+  $("monitorNote").textContent = app.simulation ? "Available on the robot. The simulator has no CAN bus." :
+    app.monitor_note || (m ? "Live · read-only · can5" : "Read-only can5 feedback: wheel reports, chassis commands, and body motors.");
+  if (!m) { $("monitorBody").innerHTML = ""; return; }
+  const drive = (d) => d ? `mode ${d.mode} · x ${signed(d.x, 3)} · y ${signed(d.y, 3)} · yaw ${signed(d.yaw, 3)}` : "—";
+  const rows = Object.entries(m.motors).map(([name, motor]) => {
+    const f = motor.feedback;
+    return `<tr><th>${name} · ${motor.id}</th><td>${f ? signed(f.angle, 3) : "—"}</td><td>${f ? signed(f.speed, 3) : "—"}</td><td>${f ? f.status : "—"}</td><td>${motor.command || "—"}</td></tr>`;
+  }).join("");
+  const c = m.count || {};
+  $("monitorBody").innerHTML = `<table>
+    <tr><th>Wheels</th><td colspan="4">${m.wheels ? m.wheels.map((v) => signed(v, 3)).join("  ") : "—"}</td></tr>
+    <tr><th>Peak |wheel|</th><td colspan="4">${m.peak.map((v) => v.toFixed(3)).join("  ")}</td></tr>
+    <tr><th>Chassis cmd</th><td colspan="4">${drive(m.drive)}</td></tr>
+    <tr><th>Last drive</th><td colspan="4">${drive(m.last_drive)}</td></tr>
+    <tr><th>Body motor</th><th>Angle</th><th>Speed</th><th>Status</th><th>Host cmd</th></tr>${rows}
+    <tr><th>Counters</th><td colspan="4">wheel ${c.wheel_reports || 0} · drive ${c.nonzero_drive || 0} · cmds ${c.chassis_commands || 0}</td></tr>
+  </table>`;
+}
+// Camera feeds -------------------------------------------------------------------------
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const feedSeen = { color: 0, depth: 0 };
+async function feedLoop(kind, img, empty) {
+  let seq = 0, url = null;
+  for (;;) {
+    if (!snap || !snap.app.camera || !snap.app.camera.on) { await sleep(300); continue; }
+    try {
+      const r = await fetch(`/camera?t=${encodeURIComponent(TOKEN)}&kind=${kind}&after=${seq}`, { cache: "no-store" });
+      if (r.status === 200) {
+        seq = Number(r.headers.get("X-Frame-Seq")) || seq;
+        const next = URL.createObjectURL(await r.blob());
+        img.src = next; img.hidden = false; empty.hidden = true;
+        if (url) URL.revokeObjectURL(url);
+        url = next; feedSeen[kind] = performance.now();
+      } else if (r.status !== 204) await sleep(500);
+    } catch (_) { await sleep(800); }
+  }
+}
+feedLoop("color", $("feedColor"), $("feedColorEmpty"));
+feedLoop("depth", $("feedDepth"), $("feedDepthEmpty"));
+
+// Voxel map ------------------------------------------------------------------------------
+const VOXEL = 0.05;
+const voxels = { epoch: 0, consumed: 0, count: 0, cap: 0, pos: new Float32Array(0), col: new Uint8Array(0),
+  index: new Map(), dirtyFrom: Infinity, dirtyTo: -1, resized: false };
+function voxelReset() {
+  voxels.count = 0; voxels.index.clear(); voxels.dirtyFrom = Infinity; voxels.dirtyTo = -1; voxels.resized = true;
+}
+function voxelApply(buffer) {
+  const view = new DataView(buffer), n = Math.floor(buffer.byteLength / 9);
+  if (voxels.count + n > voxels.cap) {
+    const cap = Math.max(65536, 2 ** Math.ceil(Math.log2(voxels.count + n)));
+    const pos = new Float32Array(cap * 3), col = new Uint8Array(cap * 3);
+    pos.set(voxels.pos.subarray(0, voxels.count * 3)); col.set(voxels.col.subarray(0, voxels.count * 3));
+    voxels.pos = pos; voxels.col = col; voxels.cap = cap; voxels.resized = true;
+  }
+  for (let i = 0; i < n; i++) {
+    const o = i * 9, x = view.getInt16(o, true), y = view.getInt16(o + 2, true), z = view.getInt16(o + 4, true);
+    const key = (x + 32768) * 4294967296 + (y + 32768) * 65536 + (z + 32768);
+    let slot = voxels.index.get(key);
+    if (slot === undefined) {
+      slot = voxels.count++;
+      voxels.index.set(key, slot);
+      voxels.pos[slot * 3] = (x + 0.5) * VOXEL; voxels.pos[slot * 3 + 1] = (y + 0.5) * VOXEL; voxels.pos[slot * 3 + 2] = (z + 0.5) * VOXEL;
+    }
+    voxels.col[slot * 3] = view.getUint8(o + 6); voxels.col[slot * 3 + 1] = view.getUint8(o + 7); voxels.col[slot * 3 + 2] = view.getUint8(o + 8);
+    voxels.dirtyFrom = Math.min(voxels.dirtyFrom, slot); voxels.dirtyTo = Math.max(voxels.dirtyTo, slot);
+  }
+}
+async function mapLoop() {
+  for (;;) {
+    try {
+      const r = await fetch(`/map?t=${encodeURIComponent(TOKEN)}&epoch=${voxels.epoch}&since=${voxels.consumed}`, { cache: "no-store" });
+      if (r.status !== 200) { await sleep(1000); continue; }
+      const epoch = Number(r.headers.get("X-Map-Epoch")), start = Number(r.headers.get("X-Map-Start")), end = Number(r.headers.get("X-Map-End"));
+      const buffer = await r.arrayBuffer();
+      if (epoch !== voxels.epoch || start !== voxels.consumed) { voxelReset(); voxels.epoch = epoch; voxels.consumed = start; }
+      if (buffer.byteLength) voxelApply(buffer);
+      voxels.consumed = end;
+    } catch (_) { await sleep(1000); }
+  }
+}
+mapLoop();
+
+// Floor height from the map: a low percentile of voxel heights, else 1.3 m under the camera.
+let floorZ = null, floorCheck = 0;
+function estimateFloor(cameraZ) {
+  const now = performance.now();
+  if (now - floorCheck > 1500) {
+    floorCheck = now;
+    floorZ = null;
+    if (voxels.count > 300) {
+      const step = Math.max(1, Math.floor(voxels.count / 20000)), zs = [];
+      for (let i = 0; i < voxels.count; i += step) zs.push(voxels.pos[i * 3 + 2]);
+      zs.sort((a, b) => a - b);
+      floorZ = zs[Math.floor(zs.length * 0.03)] - VOXEL / 2;
+    }
+  }
+  const guess = cameraZ - 1.3;
+  return floorZ == null ? guess : Math.min(floorZ, cameraZ - 0.5);
+}
+
+// Matrix helpers (column-major) --------------------------------------------------------------
+function perspective(fovy, aspect, near, far) {
+  const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
+  return [f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) * nf, -1, 0, 0, 2 * far * near * nf, 0];
+}
+function lookAt(eye, target, up) {
+  let zx = eye[0] - target[0], zy = eye[1] - target[1], zz = eye[2] - target[2];
+  let l = Math.hypot(zx, zy, zz) || 1; zx /= l; zy /= l; zz /= l;
+  let xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
+  l = Math.hypot(xx, xy, xz) || 1; xx /= l; xy /= l; xz /= l;
+  const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+  return [xx, yx, zx, 0, xy, yy, zy, 0, xz, yz, zz, 0,
+    -(xx * eye[0] + xy * eye[1] + xz * eye[2]), -(yx * eye[0] + yy * eye[1] + yz * eye[2]), -(zx * eye[0] + zy * eye[1] + zz * eye[2]), 1];
+}
+function multiply(a, b) {
+  const out = new Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    out[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+  }
+  return out;
+}
+function rotate(q, v) {  // quaternion [x, y, z, w] applied to vector v
+  const [x, y, z, w] = q, [vx, vy, vz] = v;
+  const tx = 2 * (y * vz - z * vy), ty = 2 * (z * vx - x * vz), tz = 2 * (x * vy - y * vx);
+  return [vx + w * tx + y * tz - z * ty, vy + w * ty + z * tx - x * tz, vz + w * tz + x * ty - y * tx];
+}
+const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+
+// 3D world -----------------------------------------------------------------------------------
+const view = { mode: "chase", yaw: 0, pitch: 0, zoom: 4.2, orbitYaw: 0.9, orbitPitch: 0.55, smoothYaw: null,
+  base: null, trail: [] };
+const world = (() => {
+  const canvas = $("world");
+  const gl = canvas.getContext("webgl2", { antialias: true });
+  if (!gl) { $("nogl").hidden = false; return null; }
+  function program(vs, fs) {
+    const p = gl.createProgram();
+    for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
+      const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+      gl.attachShader(p, sh);
+    }
+    gl.bindAttribLocation(p, 0, "aPos"); gl.bindAttribLocation(p, 1, "aColor");
+    gl.linkProgram(p);
+    return p;
+  }
+  const points = program(`#version 300 es
+    uniform mat4 uMVP; uniform float uScale; uniform vec3 uEye;
+    layout(location=0) in vec3 aPos; layout(location=1) in vec3 aColor; out vec3 vColor;
+    void main() {
+      gl_Position = uMVP * vec4(aPos, 1.0);
+      gl_PointSize = clamp(uScale / gl_Position.w, 1.5, 48.0);
+      float fog = clamp(1.0 - distance(aPos, uEye) / 45.0, 0.35, 1.0);
+      vColor = aColor * fog;
+    }`, `#version 300 es
+    precision mediump float; in vec3 vColor; out vec4 o;
+    void main() { vec2 c = gl_PointCoord - 0.5; float edge = max(abs(c.x), abs(c.y)); o = vec4(vColor * (edge > 0.42 ? 0.78 : 1.0), 1.0); }`);
+  const flat = program(`#version 300 es
+    uniform mat4 uMVP; layout(location=0) in vec3 aPos; layout(location=1) in vec4 aColor; out vec4 vColor;
+    void main() { gl_Position = uMVP * vec4(aPos, 1.0); vColor = aColor; }`, `#version 300 es
+    precision mediump float; in vec4 vColor; out vec4 o; void main() { o = vColor; }`);
+  const u = {
+    pMVP: gl.getUniformLocation(points, "uMVP"), pScale: gl.getUniformLocation(points, "uScale"), pEye: gl.getUniformLocation(points, "uEye"),
+    fMVP: gl.getUniformLocation(flat, "uMVP"),
+  };
+  const voxelVAO = gl.createVertexArray(), posBuf = gl.createBuffer(), colBuf = gl.createBuffer();
+  gl.bindVertexArray(voxelVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, colBuf); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.UNSIGNED_BYTE, true, 0, 0);
+  const dynVAO = gl.createVertexArray(), dynPos = gl.createBuffer(), dynCol = gl.createBuffer();
+  gl.bindVertexArray(dynVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, dynPos); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, dynCol); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+
+  function uploadVoxels() {
+    if (voxels.resized) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, posBuf); gl.bufferData(gl.ARRAY_BUFFER, voxels.pos, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, colBuf); gl.bufferData(gl.ARRAY_BUFFER, voxels.col, gl.DYNAMIC_DRAW);
+      voxels.resized = false; voxels.dirtyFrom = Infinity; voxels.dirtyTo = -1;
+    } else if (voxels.dirtyTo >= voxels.dirtyFrom) {
+      const a = voxels.dirtyFrom * 3, b = (voxels.dirtyTo + 1) * 3;
+      gl.bindBuffer(gl.ARRAY_BUFFER, posBuf); gl.bufferSubData(gl.ARRAY_BUFFER, a * 4, voxels.pos.subarray(a, b));
+      gl.bindBuffer(gl.ARRAY_BUFFER, colBuf); gl.bufferSubData(gl.ARRAY_BUFFER, a, voxels.col.subarray(a, b));
+      voxels.dirtyFrom = Infinity; voxels.dirtyTo = -1;
+    }
+  }
+
+  // Geometry builders for the robot, grid, trail, and camera frustum.
+  let P = [], C = [];
+  const push = (p, c) => { P.push(p[0], p[1], p[2]); C.push(c[0], c[1], c[2], c[3]); };
+  function box(frame, x0, x1, y0, y1, z0, z1, color) {
+    const v = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]].map(frame);
+    const faces = [[4, 5, 6, 7, 1.0], [0, 1, 5, 4, 0.62], [2, 3, 7, 6, 0.62], [1, 2, 6, 5, 0.8], [3, 0, 4, 7, 0.72], [0, 3, 2, 1, 0.4]];
+    for (const [a, b, c, d, shade] of faces) {
+      const col = [color[0] * shade, color[1] * shade, color[2] * shade, color[3]];
+      for (const i of [a, b, c, a, c, d]) push(v[i], col);
+    }
+  }
+  function draw(mode) {
+    if (!P.length) return;
+    gl.bindVertexArray(dynVAO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, dynPos); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(P), gl.STREAM_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, dynCol); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(C), gl.STREAM_DRAW);
+    gl.drawArrays(mode, 0, P.length / 3);
+    P = []; C = [];
+  }
+
+  function robotGeometry(base, yaw, height, phase, armed, resumePhase) {
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    const frame = ([x, y, z]) => [base[0] + c * x - s * y, base[1] + s * x + c * y, base[2] + z];
+    const h = Math.max(0.9, Math.min(2.2, height));
+    const shell = armed ? [0.40, 0.86, 0.68, 1] : [0.36, 0.45, 0.55, 1];
+    box(frame, -0.32, 0.32, -0.27, 0.27, 0.07, 0.30, shell);
+    for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) box(frame, sx * 0.22 - 0.07, sx * 0.22 + 0.07, sy * 0.27 - 0.03, sy * 0.27 + 0.03, 0, 0.14, [0.15, 0.18, 0.21, 1]);
+    box(frame, 0.26, 0.33, -0.08, 0.08, 0.18, 0.26, [1.0, 0.78, 0.39, 1]);  // front marker
+    box(frame, -0.14, 0.0, -0.07, 0.07, 0.30, h - 0.5, [0.55, 0.60, 0.66, 1]);  // lift column
+    box(frame, -0.13, 0.07, -0.19, 0.19, h - 0.62, h - 0.22, [0.78, 0.81, 0.85, 1]);  // torso
+    const folded = ["mapping", "stowing", "parked", "parking"].includes(phase) || (phase === "paused" && resumePhase === "mapping");
+    for (const side of [1, -1]) {
+      const y0 = side * 0.2, y1 = side * 0.27;
+      const lo = Math.min(y0, y1), hi = Math.max(y0, y1);
+      if (folded) {
+        box(frame, -0.03, 0.06, lo, hi, h - 0.78, h - 0.28, [0.65, 0.70, 0.76, 1]);
+        box(frame, -0.02, 0.17, lo + 0.01, hi - 0.01, h - 0.84, h - 0.76, [0.65, 0.70, 0.76, 1]);
+      } else {
+        box(frame, -0.03, 0.06, lo, hi, h - 0.55, h - 0.28, [0.65, 0.70, 0.76, 1]);
+        box(frame, 0.0, 0.36, lo + 0.01, hi - 0.01, h - 0.58, h - 0.5, [0.65, 0.70, 0.76, 1]);
+        box(frame, 0.33, 0.42, lo, hi, h - 0.64, h - 0.5, [0.45, 0.50, 0.56, 1]);
+      }
+    }
+    box(frame, -0.05, 0.13, -0.1, 0.1, h - 0.08, h + 0.06, [0.25, 0.85, 0.75, 1]);  // head with the ZED Mini
+  }
+
+  function frame() {
+    requestAnimationFrame(frame);
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+    if (!w || !h) return;
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    uploadVoxels();
+
+    const cam = snap && snap.app.camera && snap.app.camera.pose;
+    const camPos = cam ? cam.p : [0, 0, 0];
+    const q = cam ? cam.q : [0, 0.12, 0, 0.99];
+    const fwd = rotate(q, [1, 0, 0]);
+    const yaw = Math.atan2(fwd[1], fwd[0]);
+    const floor = estimateFloor(camPos[2]);
+    const target = [camPos[0] - Math.cos(yaw) * 0.10, camPos[1] - Math.sin(yaw) * 0.10, floor];
+    if (!view.base) view.base = target.slice();
+    for (let i = 0; i < 3; i++) view.base[i] += (target[i] - view.base[i]) * 0.35;
+    const base = view.base;
+    const last = view.trail[view.trail.length - 1];
+    if (cam && (!last || Math.hypot(base[0] - last[0], base[1] - last[1]) > 0.05)) {
+      view.trail.push([base[0], base[1]]); if (view.trail.length > 4000) view.trail.shift();
+    }
+    view.smoothYaw = view.smoothYaw == null ? yaw : view.smoothYaw + wrap(yaw - view.smoothYaw) * 0.06;
+    const height = camPos[2] - floor;
+    const focus = [base[0], base[1], base[2] + Math.min(1.0, height * 0.55)];
+    let eye, up = [0, 0, 1];
+    if (view.mode === "top") {
+      eye = [focus[0], focus[1], focus[2] + view.zoom * 2.4];
+      up = [Math.cos(view.smoothYaw + view.yaw), Math.sin(view.smoothYaw + view.yaw), 0];
+    } else {
+      const az = view.mode === "chase" ? view.smoothYaw + Math.PI + view.yaw : view.orbitYaw;
+      const el = view.mode === "chase" ? Math.max(-0.2, Math.min(1.45, 0.36 + view.pitch)) : view.orbitPitch;
+      eye = [focus[0] + Math.cos(az) * Math.cos(el) * view.zoom, focus[1] + Math.sin(az) * Math.cos(el) * view.zoom, focus[2] + Math.sin(el) * view.zoom];
+    }
+    const proj = perspective(55 * Math.PI / 180, w / h, 0.05, 250);
+    const mvp = multiply(proj, lookAt(eye, focus, up));
+
+    gl.viewport(0, 0, w, h);
+    gl.clearColor(0.035, 0.055, 0.075, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    if (voxels.count) {
+      gl.useProgram(points);
+      gl.uniformMatrix4fv(u.pMVP, false, mvp);
+      gl.uniform1f(u.pScale, VOXEL * 1.15 * proj[5] * h / 2);
+      gl.uniform3fv(u.pEye, eye);
+      gl.bindVertexArray(voxelVAO);
+      gl.drawArrays(gl.POINTS, 0, voxels.count);
+    }
+
+    gl.useProgram(flat);
+    gl.uniformMatrix4fv(u.fMVP, false, mvp);
+    // Floor grid, 1 m cells around the robot.
+    const gx = Math.round(base[0]), gy = Math.round(base[1]), R = 14, gz = floor + 0.002;
+    for (let i = -R; i <= R; i++) {
+      const a = i === 0 ? 0.22 : 0.09, col = [0.55, 0.68, 0.8, a];
+      push([gx + i, gy - R, gz], col); push([gx + i, gy + R, gz], col);
+      push([gx - R, gy + i, gz], col); push([gx + R, gy + i, gz], col);
+    }
+    push([0, 0, gz], [1, 0.45, 0.4, 0.9]); push([0.5, 0, gz], [1, 0.45, 0.4, 0.9]);  // map origin, x
+    push([0, 0, gz], [0.45, 1, 0.6, 0.9]); push([0, 0.5, gz], [0.45, 1, 0.6, 0.9]);  // y
+    if (cam) {  // camera view frustum
+      const tip = (dx, dy, dz, l) => { const d = rotate(q, [dx, dy, dz]); return [camPos[0] + d[0] * l, camPos[1] + d[1] * l, camPos[2] + d[2] * l]; };
+      const corners = [[1, 1, 0.58], [1, -1, 0.58], [1, -1, -0.58], [1, 1, -0.58]].map(([a, b, c]) => tip(a, b, c, 0.9));
+      const fc = [0.25, 0.85, 0.75, 0.85];
+      for (let i = 0; i < 4; i++) { push(camPos, fc); push(corners[i], fc); push(corners[i], fc); push(corners[(i + 1) % 4], fc); }
+    }
+    gl.depthMask(false); draw(gl.LINES); gl.depthMask(true);
+    if (view.trail.length > 1) {
+      for (const [x, y] of view.trail) push([x, y, floor + 0.01], [1.0, 0.78, 0.39, 0.75]);
+      draw(gl.LINE_STRIP);
+    }
+    const robot = (snap && snap.robot) || {};
+    robotGeometry(base, yaw, height, snap ? snap.phase : "offline", robot.armed, robot.resume_phase);
+    draw(gl.TRIANGLES);
+  }
+  requestAnimationFrame(frame);
+
+  // Mouse: drag to look around, scroll to zoom, double-click to recenter.
+  let drag = null;
+  canvas.addEventListener("pointerdown", (e) => { drag = [e.clientX, e.clientY]; canvas.setPointerCapture(e.pointerId); canvas.classList.add("dragging"); });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = (e.clientX - drag[0]) * 0.006, dy = (e.clientY - drag[1]) * 0.006;
+    drag = [e.clientX, e.clientY];
+    if (view.mode === "orbit") { view.orbitYaw -= dx; view.orbitPitch = Math.max(-0.1, Math.min(1.5, view.orbitPitch + dy)); }
+    else { view.yaw -= dx; view.pitch += dy; }
+  });
+  const end = () => { drag = null; canvas.classList.remove("dragging"); };
+  canvas.addEventListener("pointerup", end); canvas.addEventListener("pointercancel", end);
+  canvas.addEventListener("wheel", (e) => { e.preventDefault(); view.zoom = Math.max(1.2, Math.min(40, view.zoom * Math.exp(e.deltaY * 0.0012))); }, { passive: false });
+  canvas.addEventListener("dblclick", () => { view.yaw = 0; view.pitch = 0; view.zoom = view.mode === "top" ? 5 : 4.2; });
+  return { gl };
+})();
+
+$("viewSeg").onclick = (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.v === "orbit" && view.mode !== "orbit") view.orbitYaw = (view.smoothYaw || 0) + Math.PI + view.yaw;
+  view.mode = b.dataset.v; view.yaw = 0; view.pitch = 0;
+  queueRender();
+};
+$("cameraToggle").onclick = () => command("camera", !(snap && snap.app.camera && snap.app.camera.on));
+$("mapSeg").onclick = (e) => { const b = e.target.closest("button"); if (b) command("map_mode", b.dataset.v); };
+$("mapReset").onclick = async () => { if (await ask("Clear the map?", "This removes every voxel collected so far, on the robot and here. Save first if you want to keep it.", [["Clear map", true, "warn"]]) === true) command("map_reset"); };
+$("mapSave").onclick = () => command("map_save");
+
+function renderMapHud(app, robot, phase) {
+  const camera = app.camera || {};
+  const pose = camera.pose;
+  $("cameraToggle").textContent = camera.on ? "Stop camera" : "Start camera";
+  $("mapReset").disabled = !camera.on; $("mapSave").disabled = !camera.on;
+  [...$("mapSeg").children].forEach((b) => b.className = b.dataset.v === camera.map_mode ? "on" : "");
+  [...$("viewSeg").children].forEach((b) => b.className = b.dataset.v === view.mode ? "on" : "");
+  const chip = $("trackChip");
+  if (!camera.on) { chip.textContent = "Camera off"; chip.className = "chip"; }
+  else if (!pose) { chip.textContent = "Starting…"; chip.className = "chip warn"; }
+  else if (pose.tracking !== "OK") { chip.textContent = `Tracking ${pose.tracking.toLowerCase()}`; chip.className = "chip warn"; }
+  else if (camera.integrating) { chip.textContent = pose.simulated ? "Mapping · simulated" : "Mapping"; chip.className = "chip good"; }
+  else { chip.textContent = pose.simulated ? "Tracking · simulated" : "Tracking"; chip.className = "chip"; }
+  $("statVoxels").textContent = voxels.count.toLocaleString();
+  $("statFps").textContent = pose ? fmt(pose.fps, 0) : "—";
+  $("statPos").textContent = pose ? `${pose.p[0].toFixed(1)}, ${pose.p[1].toFixed(1)}` : "—";
+  let note;
+  if (!camera.on) note = "Start the camera to see the feeds and build the map.";
+  else if (camera.note && !pose) note = camera.note;
+  else if (camera.map_mode === "off") note = "Map building is off. The view still tracks the robot.";
+  else if (camera.map_mode === "auto" && !camera.wants_integration) note = "Auto: the map builds in Mapping mode, with the arms folded out of view.";
+  else if (pose && pose.tracking !== "OK") note = "Waiting for camera tracking. Point the camera at a textured, well-lit area.";
+  else if (camera.map_mode === "on" && phase !== "mapping") note = "Building always. Anything in view, including the arms, is added.";
+  else note = camera.saved ? `Last save on the robot: ${camera.saved}` : "Building the map. Drive slowly for the best result.";
+  $("mapNote").textContent = note;
+  const [label] = PHASES[phase] || [phase];
+  $("hudPhase").textContent = label;
+  const cmd = robot.command || [0, 0, 0];
+  $("hudVel").textContent = `x ${signed(cmd[0])}  y ${signed(cmd[1])} m/s  yaw ${signed(cmd[2])} rad/s`;
+  if (!camera.on) {
+    for (const kind of ["Color", "Depth"]) { $(`feed${kind}`).hidden = true; $(`feed${kind}Empty`).hidden = false; $(`feed${kind}Empty`).innerHTML = `${kind === "Color" ? "Color feed" : "Depth view"}<br>Camera off`; $(`feed${kind}Age`).textContent = ""; }
+  } else {
+    for (const kind of ["color", "depth"]) {
+      const cap = kind === "color" ? "Color" : "Depth";
+      const age = feedSeen[kind] ? (performance.now() - feedSeen[kind]) / 1000 : null;
+      $(`feed${cap}Age`).textContent = age == null ? "" : age > 1.5 ? `${age.toFixed(0)} s old` : "live";
+      if (age == null) $(`feed${cap}Empty`).textContent = "Waiting for frames…";
+    }
+  }
+}
+setInterval(queueRender, 500);  // keeps feed ages and voxel counts fresh between snapshots
+queueRender();
+</script>
+</body>
+</html>

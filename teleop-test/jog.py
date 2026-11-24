@@ -21,8 +21,10 @@ DRIVE = {
     "a": (0.0, LINEAR_SPEED, 0.0),
     "s": (-LINEAR_SPEED, 0.0, 0.0),
     "d": (0.0, -LINEAR_SPEED, 0.0),
-    "e": (0.0, 0.0, 0.12),
-    "r": (0.0, 0.0, -0.12),
+    # 0.12 rad/s quantized to 19 chassis counts, close to the 16 counts that
+    # did not move the base. 0.30 rad/s is 49 counts, like the 0.15 m/s pulse.
+    "e": (0.0, 0.0, 0.30),
+    "r": (0.0, 0.0, -0.30),
 }
 ZERO = (0.0, 0.0, 0.0)
 PULSE_SECONDS = 0.25
@@ -30,9 +32,16 @@ BRAKE_SECONDS = 0.15
 TICK_SECONDS = 0.002
 ARM_STEP_METERS = 0.005
 ARM_RADIUS_METERS = 0.025
-BODY_JOG = {"lift": (0, 0.1, 0.5, 0.0, 20.0),
+# Lift height is in SDK units: the SDK clamps it to 0..20 (max_height_ in
+# lift_head_control_loop.h). The ZED Mini mounted above the lift needs about
+# 6 in (150 mm) of clearance at the top, so every height sent to the SDK is
+# capped at LIFT_CEILING. 10.0 is a conservative placeholder until the lift's
+# mm per SDK unit is measured; then use 20 - 150 / mm_per_unit.
+LIFT_SDK_MAX = 20.0
+LIFT_CEILING = 10.0
+BODY_JOG = {"lift": (0, 0.1, 0.5, 0.0, LIFT_CEILING),
             "head": (3, 0.02, 0.08, 0.0, 0.8)}
-ZERO_AXES = {1: (0, 20.0), 4: (1, 3.14)}
+ZERO_AXES = {1: (0, LIFT_SDK_MAX), 4: (1, 3.14)}
 BODY_FEEDBACK_TIMEOUT = 0.25
 ZERO_SETTLE_SECONDS = 0.06
 HELP = {
@@ -152,13 +161,15 @@ class Hardware:
                 calibration.holding.add(motor)
         return captured
 
-    def body_tick(self, position, velocity, driving, head_target=None):
+    def body_tick(self, position, velocity, mode, head_target=None):
+        """Mode 1 is the SDK's drive (unlocked) state and mode 2 its brake."""
         height, waist, _, _ = position
-        self.body.set_height(height)
+        # Hard limit for every caller (jog console and whole-robot controller).
+        self.body.set_height(min(height, LIFT_CEILING))
         self.body.set_waist_pos(waist)
         if head_target is not None:
             self.body.set_head_pitch(head_target)
-        self.body.set_chassis_cmd(*velocity, 1 if driving else 2)
+        self.body.set_chassis_cmd(*velocity, mode)
         self.body.loop()
 
     def arm_pose(self):
@@ -215,7 +226,7 @@ class JogSession:
                 self.target = tuple(captures.get(index, value) for index, value in enumerate(self.target))
                 self.pulse_end = 0.0
             velocity, driving = self.drive_command(now)
-            self.hardware.body_tick(self.target, velocity, driving, self.head_target)
+            self.hardware.body_tick(self.target, velocity, 1 if driving else 2, self.head_target)
 
     def stop(self):
         self.pulse_end = 0.0

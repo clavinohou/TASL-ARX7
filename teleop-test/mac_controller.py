@@ -1,252 +1,146 @@
-"""Mac keyboard console for the ARX X7s."""
+"""ARX X7s Mac controller: a local browser page in front of the robot's SSH control bridge.
+
+This process owns the SSH link and every input safety rule. The page only
+reports which keys are held and whether it has focus. The page is served on
+127.0.0.1 and every request needs this launch's random token.
+"""
 
 import argparse
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
 import queue
+import secrets
+import signal
 import subprocess
 import sys
 import threading
 import time
-import tkinter as tk
-from tkinter import messagebox, ttk
+from urllib.parse import parse_qs, urlparse
 
-from control_bridge import PREFIX
-from robot_session import DRIVE_KEYS, JOG_KEYS
-
+from camera_feed import CameraHub, RemoteCamera, SimCamera
+from control_bridge import OLD_PREFIXES, PREFIX
+from robot_session import ARM_SELECTIONS, DRIVE_KEYS, DRIVE_MODES, DRIVE_PHASES, JOG_KEYS, OPERATIONS, SPEED_LEVELS
 
 ROOT = Path(__file__).resolve().parent
-ROBOT = "arx@10.90.134.126"
-REMOTE = 'exec bash "$HOME/Documents/Teleop Test Enviroment/run-controller.sh"'
-
-BG, PANEL, EDGE = "#10171e", "#19242e", "#293947"
-INK, MUTED, QUIET = "#f2f6fa", "#b6c6d2", "#8ea1b1"
-ACCENT, ACCENT_INK, DANGER = "#84e5c1", "#10271f", "#ffaaa1"
-KEY_BG, ACTIVE_BG = "#2b3b49", "#84e5c1"
-FONT, MONO = "Helvetica Neue", "Menlo"
-
-CHASSIS = [(("w", "W"), "Forward"), (("s", "S"), "Back"),
-           (("a", "A"), "Strafe left"), (("d", "D"), "Strafe right"),
-           (("left", "←"), "Turn left"), (("right", "→"), "Turn right")]
-ARMS = [(("i", "I"), "Up"), (("k", "K"), "Down"),
-        (("j", "J"), "Left"), (("l", "L"), "Right"),
-        (("u", "U"), "Forward"), (("o", "O"), "Back")]
-BODY = [(("r", "R"), "Raise lift"), (("f", "F"), "Lower lift"),
-        (("q", "Q"), "Tilt torso"), (("e", "E"), "Toward upright")]
-TOOLS = [(("g", "G"), "Open grippers"), (("h", "H"), "Close grippers"),
-         (("1", "1"), "Head pitch +"), (("2", "2"), "Head pitch −")]
-STATUS = {
-    "offline": ("Disconnected", QUIET), "connecting": ("Connecting", QUIET),
-    "idle": ("Standby", MUTED), "homing": ("Homing", "#ffcf83"),
-    "resting": ("Moving to rest", "#ffcf83"), "ready": ("Ready", ACCENT),
-    "paused": ("Paused", "#ffcf83"), "fault": ("Motion locked", DANGER),
-}
+PAGE = ROOT / "controller_ui.html"
+DEFAULT_ROBOT = "arx@10.90.134.126"
+REMOTE_DIR = "$HOME/Documents/Teleop Test Enviroment"
+BUSY_PREFIX = b"ARX-BUSY "
 CONTROL_KEYS = set(DRIVE_KEYS) | JOG_KEYS
-HEARTBEAT_WAIT = 0.6
+BROWSER_FRESH = 0.20   # browser input older than this counts as released
+BROWSER_GONE = 0.50    # a silent page is treated as unfocused
+HEARTBEAT_WAIT = 0.6   # stop if robot status stops arriving
+STARTUP_WAIT = 6.0     # the bridge can block while it opens the body SDK
 CONNECT_WAIT = 12.0
+OP_RETRY = 1.0
+DRIVE_LINGER = 0.5     # without Space: keep drive mode this long after the last drive key, so the base ramps down
+SSH_OPTIONS = ["-o", "StrictHostKeyChecking=yes", "-o", "UpdateHostKeys=no", "-o", "ClearAllForwardings=yes",
+               "-o", "ForwardAgent=no"]
+MAP_MODES = ("auto", "on", "off")  # auto: build the map only in mapping mode (arms folded)
+CAMERA_REMOTE = ('LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:/usr/local/zed/lib '
+                 f'exec python3 -Bu "{REMOTE_DIR}/zed_stream.py"')
+OP_LABELS = {"enable": "Enable", "park": "Park", "recover": "Recover", "map": "Mapping mode"}
+OP_PHASES = {"enable": ("idle", "paused", "parked", "mapping"), "park": ("ready", "paused", "mapping"),
+             "recover": ("fault",), "map": ("ready", "paused")}
 
 
-class Button(ttk.Button):
-    def __init__(self, parent, title, command, style):
-        super().__init__(parent, text=title, command=command, style=style, takefocus=True)
-        self.bind("<Return>", self.activate)
-        widget, widget_class, top, all_widgets = self.bindtags()
-        self.bindtags((widget, top, widget_class, all_widgets))
-        self.enabled = True
-
-    def activate(self, event):
-        self.invoke()
-        return "break"
-
-    def set(self, *, title=None, enabled=True):
-        self.enabled = enabled
-        self.state(["!disabled" if enabled else "disabled"])
-        if title is not None and title != self["text"]:
-            self.configure(text=title)
-
-
-class ControllerWindow:
-    def __init__(self, root, socket_path, simulation):
-        self.root = root
+class Controller:
+    def __init__(self, robot=DEFAULT_ROBOT, socket_path=None, simulation=True, sim_stall=False):
+        self.robot = robot
         self.socket_path = socket_path
         self.simulation = simulation
+        self.sim_stall = sim_stall
+        self.lock = threading.RLock()
+        self.changed = threading.Condition(self.lock)
+        self.version = 0
         self.events = queue.SimpleQueue()
         self.process = None
+        self.connecting = False
         self.state = {}
-        self.keys = set()
-        self.release_jobs = {}
-        self.pending_action = ""
-        self.enable_requested = False
-        self.live_started = False
-        self.space_blocked = False
         self.last_status = 0.0
-        self.keycaps = {}
-        self.closing = False
+        self.status_times = deque(maxlen=40)
         self.waiting = False
+        self.busy = None
+        self.live_started = False
+        self.robot_seq = 0
+        self.idle_notice = None
+        self.last_detail = None
+        self.log = deque(maxlen=300)
+        self.log_seq = 0
+        self.owner = None
+        self.browser_seen = 0.0
+        self.focused = False
+        self.keys = set()
+        self.armed_keys = set()
+        self.space_blocked = False
+        self.require_space = False  # True restores the hold-Space deadman
+        self.last_drive = -1e9
+        self.pending = ""
+        self.op = None
+        self.speed = 0
+        self.selection = "both"
+        self.drive_mode = DRIVE_MODES[0]
+        self.monitor_process = None
+        self.monitor = None
+        self.monitor_note = None
+        self.monitor_starting = False
+        self.hub = CameraHub()
+        self.camera = None
+        self.camera_starting = False
+        self.camera_note = None
+        self.camera_pose = None
+        self.camera_saved = None
+        self.map_mode = "auto"
+        self.integrating = None
+        self.closing = False
+        self.quit_requested = threading.Event()
+        self.add_log("Simulator ready. Press Connect." if simulation else f"Ready to connect to {robot}.")
 
-        root.title("ARX X7s Controller")
-        root.configure(bg=BG)
-        root.minsize(700, 630)
-        root.geometry("800x690")
-        root.bind("<KeyPress>", self.press)
-        root.bind("<KeyRelease>", self.release)
-        root.bind("<FocusOut>", lambda event: root.after_idle(self.check_focus))
-        root.protocol("WM_DELETE_WINDOW", self.close)
-        style = ttk.Style(root)
-        style.theme_use("clam")
-        for name, background, foreground in (
-            ("Connect", KEY_BG, INK), ("Enable", ACCENT, ACCENT_INK), ("Stop", "#40282d", DANGER),
-        ):
-            button = f"{name}.TButton"
-            style.configure(button, background=background, foreground=foreground,
-                            bordercolor=BG, lightcolor=background, darkcolor=background,
-                            focuscolor=foreground, relief="flat", padding=(14, 8),
-                            font=(FONT, 13, "bold"))
-            style.map(button, background=[("disabled", PANEL), ("pressed", EDGE), ("active", background)],
-                      foreground=[("disabled", QUIET), ("pressed", INK)])
-        self.build()
-        self.render()
-        root.after(15, self.poll)
+    # Helpers --------------------------------------------------------------------
 
-    @staticmethod
-    def label(parent, text, size=13, color=INK, bold=False, mono=False):
-        return tk.Label(parent, text=text, anchor="w", justify="left", bg=parent["bg"], fg=color,
-                        font=(MONO if mono else FONT, size, "bold" if bold else "normal"))
+    def notify(self):
+        with self.lock:
+            self.version += 1
+            self.changed.notify_all()
 
-    def build(self):
-        content = tk.Frame(self.root, bg=BG)
-        content.pack(fill="both", expand=True, padx=26, pady=20)
-        header = tk.Frame(content, bg=BG)
-        header.pack(fill="x")
-        title = tk.Frame(header, bg=BG)
-        title.pack(side="left")
-        self.label(title, "ARX X7s Controller", 28, bold=True).pack(anchor="w")
-        self.label(title, "Local simulator" if self.simulation else "Lab robot over SSH",
-                   12, MUTED).pack(anchor="w", pady=(2, 0))
-        buttons = tk.Frame(header, bg=BG)
-        buttons.pack(side="right")
-        self.connect_button = Button(buttons, "Connect", self.toggle_connection, "Connect.TButton")
-        self.connect_button.pack(side="left")
-        self.enable_button = Button(buttons, "Enable", self.enable, "Enable.TButton")
-        self.enable_button.pack(side="left", padx=5)
-        self.stop_button = Button(buttons, "Stop · Esc", self.stop, "Stop.TButton")
-        self.stop_button.pack(side="left")
+    def add_log(self, text, level="info", source="app"):
+        with self.lock:
+            self.log_seq += 1
+            self.log.append({"seq": self.log_seq, "time": time.strftime("%H:%M:%S"), "level": level,
+                             "text": text, "source": source})
+            self.notify()
 
-        status = tk.Frame(content, bg=PANEL, padx=14, pady=10, highlightthickness=1,
-                          highlightbackground=EDGE)
-        status.pack(fill="x", pady=(16, 10))
-        status_header = tk.Frame(status, bg=PANEL)
-        status_header.pack(fill="x")
-        self.phase = self.label(status_header, "", 18, ACCENT, bold=True)
-        self.phase.pack(side="left")
-        self.notice = self.label(status, "", 12, MUTED)
-        self.notice.configure(wraplength=600)
-        status.bind("<Configure>", lambda event: self.notice.configure(wraplength=max(400, event.width - 28)))
-        self.notice.pack(anchor="w", pady=(3, 7))
-        self.startup = self.label(status, "", 12, MUTED)
-        self.startup.pack(anchor="w")
+    @property
+    def phase(self):
+        return self.state.get("phase", "connecting" if self.process or self.connecting else "offline")
 
-        deadman_bar = tk.Frame(content, bg=BG)
-        deadman_bar.pack(fill="x", pady=(1, 10))
-        self.keycap(deadman_bar, "space", "SPACE", width=7).pack(side="left", padx=(0, 8))
-        self.deadman = self.label(deadman_bar, "", 13, bold=True)
-        self.deadman.pack(side="left")
+    def ssh(self, remote):
+        command = ["/usr/bin/ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                   "-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=2", *SSH_OPTIONS]
+        if self.socket_path:
+            command += ["-S", self.socket_path, "-o", "ProxyCommand=/usr/bin/false"]
+        return command + [self.robot, remote]
 
-        grid = tk.Frame(content, bg=BG)
-        grid.pack(fill="both", expand=True)
-        for column in range(2):
-            grid.columnconfigure(column, weight=1, uniform="cards")
-        for row in range(2):
-            grid.rowconfigure(row, weight=1)
-        self.chassis = self.card(grid, 0, 0, "Chassis", "Hold to drive", CHASSIS)
-        self.arms = self.card(grid, 0, 1, "Both arms", "Tap for 5 mm steps", ARMS)
-        self.body = self.card(grid, 1, 0, "Torso & lift", "Tap to jog", BODY)
-        self.tools = self.card(grid, 1, 1, "Grippers & head", "Tap to jog", TOOLS)
-        self.footer = self.label(content, "Keep the controller window in focus while driving.", 11, QUIET)
-        self.footer.pack(anchor="w", pady=(10, 0))
-
-    def keycap(self, parent, key, text, width=2):
-        cap = tk.Label(parent, text=text, width=width, padx=4, pady=3, bg=KEY_BG, fg=INK,
-                       font=(MONO, 12, "bold"))
-        self.keycaps[key] = cap
-        return cap
-
-    def card(self, parent, row, column, title, instruction, bindings):
-        panel = tk.Frame(parent, bg=PANEL, padx=13, pady=10, highlightthickness=1,
-                         highlightbackground=EDGE)
-        panel.grid(row=row, column=column, sticky="nsew", padx=(0, 5) if not column else (5, 0),
-                   pady=(0, 5) if not row else (5, 0))
-        heading = tk.Frame(panel, bg=PANEL)
-        heading.pack(fill="x", pady=(0, 8))
-        self.label(heading, title, 16, bold=True).pack(side="left")
-        self.label(heading, instruction, 11, QUIET).pack(side="right")
-        keys = tk.Frame(panel, bg=PANEL)
-        keys.pack(fill="x")
-        for index, ((key, symbol), description) in enumerate(bindings):
-            cell = tk.Frame(keys, bg=PANEL)
-            cell.grid(row=index // 2, column=index % 2, sticky="w", pady=2)
-            keys.columnconfigure(index % 2, weight=1, uniform="keys")
-            self.keycap(cell, key, symbol).pack(side="left")
-            self.label(cell, description, 12, MUTED).pack(side="left", padx=(6, 0))
-        measurement = self.label(panel, "—", 11, MUTED, mono=True)
-        measurement.pack(anchor="w", side="bottom", pady=(7, 0))
-        return measurement
-
-    def clear_input(self):
-        self.space_blocked |= "space" in self.keys
-        self.keys.clear()
-        self.pending_action = ""
-        for job in self.release_jobs.values():
-            self.root.after_cancel(job)
-        self.release_jobs.clear()
-
-    def toggle_connection(self):
-        if self.process:
-            if self.confirm_release():
-                self.disconnect()
-        else:
-            self.connect()
-
-    def connect(self):
-        self.clear_input()
-        if self.simulation:
-            command = [sys.executable, "-Bu", str(ROOT / "control_bridge.py")]
-        else:
-            command = ["/usr/bin/ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-                       "-o", "StrictHostKeyChecking=yes", "-o", "ServerAliveInterval=2",
-                       "-o", "ServerAliveCountMax=2", "-o", "ClearAllForwardings=yes",
-                       "-o", "ForwardAgent=no", "-o", "UpdateHostKeys=no"]
-            if self.socket_path:
-                command += ["-S", self.socket_path, "-o", "ProxyCommand=/usr/bin/false"]
-            command += [ROBOT, REMOTE]
-        try:
-            self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                            stderr=subprocess.STDOUT, bufsize=0, start_new_session=True)
-        except OSError as exc:
-            self.render(str(exc))
-            return
-        os.set_blocking(self.process.stdin.fileno(), False)
-        self.last_status = time.monotonic()
-        self.waiting = True
-        self.root.focus_set()
-        threading.Thread(target=self.read, args=(self.process,), daemon=True).start()
-        self.render()
-
-    def read(self, process):
-        with process.stdout:
-            for line in process.stdout:
-                if line.startswith(PREFIX):
-                    try:
-                        self.events.put((process, "state", json.loads(line[len(PREFIX):])))
-                    except ValueError:
-                        pass
-                elif line.startswith(b"ARX1 "):
-                    self.events.put((process, "old", None))
-                    break
-                elif line.strip():
-                    self.events.put((process, "log", line.decode(errors="replace").strip()))
-        self.events.put((process, "closed", process.wait()))
+    def ensure_master(self):
+        """Reopen the shared SSH session if it ended. A password prompt appears in Terminal."""
+        if not self.socket_path:
+            return True
+        check = subprocess.run(["/usr/bin/ssh", "-S", self.socket_path, "-O", "check", self.robot],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if check.returncode == 0:
+            return True
+        self.add_log("The SSH session to the robot ended. Enter the robot password in the Terminal window "
+                     "if it asks.", "warn")
+        master = subprocess.run(["/usr/bin/ssh", "-fNT", "-M", "-S", self.socket_path, "-o", "ConnectTimeout=6",
+                                 "-o", "NumberOfPasswordPrompts=1", "-o", "ServerAliveInterval=5",
+                                 "-o", "ServerAliveCountMax=2", *SSH_OPTIONS, self.robot])
+        if master.returncode != 0:
+            self.add_log("Could not sign into the robot. Check the lab network and the robot's address.", "fault")
+            return False
+        return True
 
     def send(self, frame):
         if not self.process:
@@ -257,223 +151,689 @@ class ControllerWindow:
             return False
         return True
 
-    def poll(self):
-        latest = None
-        detail = None
-        while True:
-            try:
-                process, kind, value = self.events.get_nowait()
-            except queue.Empty:
-                break
-            if process is not self.process:
-                continue
-            if kind == "state":
-                latest = value
-            elif kind == "old":
-                self.disconnect("The robot has the old controller. Run Send Controller Update.command.")
-                latest = None
-            elif kind == "log":
-                detail = value[:175]
-            elif kind == "closed":
-                self.disconnect(detail or "Controller connection ended. If powered, check actuator support.")
-                latest = None
-        if latest and self.process:
-            old_phase = self.state.get("phase")
-            self.state = latest
-            self.last_status = time.monotonic()
+    # Connection -------------------------------------------------------------------
+
+    def connect(self, takeover=False):
+        with self.lock:
+            if self.process or self.connecting:
+                return
+            self.connecting = True
+            self.busy = None
+            self.notify()
+        threading.Thread(target=self._connect, args=(takeover,), daemon=True).start()
+
+    def _connect(self, takeover):
+        process = None
+        try:
+            if self.simulation:
+                command = [sys.executable, "-Bu", str(ROOT / "control_bridge.py")]
+                if self.sim_stall:
+                    command.append("--sim-stall")
+            else:
+                if not self.ensure_master():
+                    return
+                remote = f'exec bash "{REMOTE_DIR}/run-controller.sh"' + (" --takeover" if takeover else "")
+                command = self.ssh(remote)
+            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, bufsize=0, start_new_session=True)
+            os.set_blocking(process.stdin.fileno(), False)
+        except OSError as exc:
+            self.add_log(f"Could not start the controller: {exc}", "fault")
+            return
+        finally:
+            with self.lock:
+                self.connecting = False
+                if process is not None:
+                    self.process = process
+                    self.state = {}
+                    self.last_status = time.monotonic()
+                    self.status_times.clear()
+                    self.waiting = False
+                    self.robot_seq = 0
+                    self.idle_notice = None
+                    self.last_detail = None
+                    self.block_space()
+                self.notify()
+        if takeover:
+            self.add_log("Taking over from the previous controller session.", "warn")
+        self.add_log("Connecting to the simulator." if self.simulation else f"Connecting to {self.robot}.")
+        threading.Thread(target=self.read, args=(process,), daemon=True).start()
+
+    def read(self, process):
+        with process.stdout:
+            for line in process.stdout:
+                if line.startswith(PREFIX):
+                    try:
+                        self.events.put((process, "state", json.loads(line[len(PREFIX):])))
+                    except ValueError:
+                        pass
+                elif line.startswith(OLD_PREFIXES):
+                    self.events.put((process, "old", None))
+                    break
+                elif line.startswith(BUSY_PREFIX):
+                    try:
+                        busy = json.loads(line[len(BUSY_PREFIX):])
+                    except ValueError:
+                        busy = {"bridge": False}
+                    self.events.put((process, "busy", busy))
+                elif line.strip():
+                    self.events.put((process, "log", line.decode(errors="replace").strip()))
+        self.events.put((process, "closed", process.wait()))
+
+    def disconnect(self, notice=None, level="info"):
+        with self.lock:
+            process, self.process = self.process, None
+            if process:
+                try:
+                    os.write(process.stdin.fileno(), b'{"op": "quit"}\n')
+                except OSError:
+                    pass
+                try:
+                    process.stdin.close()
+                except OSError:
+                    pass
+                threading.Thread(target=self.reap, args=(process,), daemon=True).start()
+            self.state = {}
             self.waiting = False
-            phase = latest["phase"]
-            self.live_started |= latest["live"] and latest["started"]
-            if self.pending_action != "enable":
-                self.enable_requested = False
-                if phase == "idle":
-                    self.live_started = False
-            if phase != old_phase and phase != "idle" and self.pending_action != "enable":
-                self.clear_input()
-            focused = self.root.focus_displayof() is not None
-            deadman = focused and not self.space_blocked and "space" in self.keys and phase == "ready"
-            action = self.pending_action
-            if not focused or action != "enable" and not deadman:
-                action = ""
-            if self.send({"lease": latest["lease"], "deadman": deadman,
-                          "keys": sorted(self.keys & DRIVE_KEYS.keys()) if deadman else [], "action": action}):
-                if action == "enable" and not self.simulation:
-                    self.live_started = True
-                self.pending_action = ""
-            self.render()
-        elif self.process:
-            delay = time.monotonic() - self.last_status
-            if detail and not self.state:
-                self.render(detail)
-            if self.state and delay > HEARTBEAT_WAIT and not self.waiting:
-                self.stop()
-                self.waiting = True
-                self.render("Feedback interrupted. Stop requested.")
-            elif not self.state and delay > CONNECT_WAIT:
-                self.disconnect("The controller did not respond. Check the lab connection and SDK startup.")
-        self.root.after(15, self.poll)
+            self.live_started = False
+            self.op = None
+            self.block_space()
+            if notice:
+                self.add_log(notice, level)
+            self.notify()
 
-    def render(self, notice=None):
-        state = self.state
-        phase = state.get("phase", "connecting" if self.process else "offline")
-        label, color = STATUS[phase]
-        if self.waiting and state:
-            label, color = "Connection interrupted", DANGER
-        self.phase.configure(text=f"●  {label}", fg=color)
-        if notice is None:
-            notice = state.get("notice") or ("Opening controller session…" if self.process else
-                                            "Connect to open a controller session.")
-        self.notice.configure(text=notice)
-        self.connect_button.set(title="Disconnect" if self.process else "Connect")
-        self.enable_button.set(enabled=phase in ("idle", "paused") and not self.enable_requested and not self.waiting)
-        self.stop_button.set(enabled=bool(self.process))
-        arms = state.get("arms", {})
-        body = state.get("body", {})
-        if phase == "homing":
-            lift = "Zeroed" if "0" in body else "Homing"
-            torso = "Zeroed" if "1" in body else "Homing"
-        else:
-            body_status = {"ready": "Holding", "paused": "Holding", "resting": "Moving"}.get(phase, "Feedback")
-            moving = state.get("body_moving", ())
-            lift = ("Moving" if 0 in moving else body_status) if "0" in body else "—"
-            torso = ("Moving" if 1 in moving else "Holding" if phase == "resting" else body_status) if "1" in body else "—"
-        self.startup.configure(text=f"Left arm  {arms.get('left', '—')}     Right arm  {arms.get('right', '—')}"
-                                    f"     Lift  {lift}     Torso  {torso}")
-        active = "space" in self.keys and not self.space_blocked and phase == "ready" and not self.waiting
-        deadman_text = ("Controls locked" if phase != "ready" or self.waiting else
-                        "Release Space to arm" if self.space_blocked else
-                        "Keyboard active" if active else "Hold Space while using the keys")
-        self.deadman.configure(text=deadman_text, fg=ACCENT if active else MUTED)
-        for key, cap in self.keycaps.items():
-            pressed = active and key in self.keys
-            cap.configure(bg=ACTIVE_BG if pressed else KEY_BG, fg=ACCENT_INK if pressed else INK)
+    @staticmethod
+    def reap(process):
+        try:
+            process.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            process.terminate()
 
-        velocity = state.get("velocity", ())
-        wheels = state.get("wheels")
-        wheel_values = "  ".join(f"{value:+.1f}" for value in wheels) if wheels is not None else "—"
-        drive = "Drive sent" if any(velocity) else "Brake sent" if state.get("started") else "Idle"
-        self.chassis.configure(text=f"{drive}   Wheels {wheel_values}", fg=ACCENT if any(velocity) else MUTED)
-        poses = state.get("poses", {})
-        readings = [f"{side[0].upper()} {poses[side][2]:.3f} m" for side in ("left", "right") if side in poses]
-        self.arms.configure(text="Z   " + "    ".join(readings) if readings else "Z   —")
-        lift = f"{body['0']:.2f}" if "0" in body else "—"
-        torso = f"{body['1']:.2f} rad" if "1" in body else "—"
-        pitch = f"{body['3']:.2f} rad" if "3" in body else "—"
-        self.body.configure(text=f"Lift {lift}    Torso {torso}")
-        self.tools.configure(text=f"Pitch {pitch}    Grip {state.get('gripper', '—').lower()}")
+    # Robot messages ------------------------------------------------------------------
 
-    def enable(self):
-        if not self.enable_button.enabled or self.enable_requested:
-            return
-        self.clear_input()
-        if not self.simulation and not messagebox.askokcancel(
-            "Enable physical hardware",
-            "Enable can move both arms, the lift, and the torso. Confirm the robot is in view, "
-            "the area is clear, and the physical stop is within reach.",
-            parent=self.root,
-        ):
-            return
-        self.root.focus_set()
-        self.enable_requested = True
-        self.pending_action = "enable"
-        self.render("Enable requested…")
+    def run(self):
+        while not self.closing:
+            try:
+                process, kind, value = self.events.get(timeout=0.02)
+            except queue.Empty:
+                process = None
+            with self.lock:
+                if process is not None and process is self.process:
+                    self.handle(kind, value)
+                self.tick(time.monotonic())
 
-    def press(self, event):
-        key = event.keysym.lower()
-        if key == "escape":
-            self.stop()
-            return "break"
-        if key not in CONTROL_KEYS and key != "space":
-            return
-        if key in self.release_jobs:
-            self.root.after_cancel(self.release_jobs.pop(key))
-        if self.state.get("phase") != "ready" or self.waiting:
-            if key == "space":
-                self.space_blocked = True
-            return "break"
-        if key in self.keys:
-            return "break"
-        if event.state & (0x0004 | 0x0008 | 0x0010):
-            if key == "space":
-                self.space_blocked = True
-            return "break"
-        if self.space_blocked:
-            return "break"
-        if key != "space" and "space" not in self.keys:
-            return "break"
-        self.keys.add(key)
-        if key in JOG_KEYS and not self.pending_action:
-            self.pending_action = key
-        self.render()
-        return "break"
+    def handle(self, kind, value):
+        if kind == "state":
+            self.on_status(value)
+        elif kind == "old":
+            self.disconnect("The robot has the old controller. Run Send Controller Update.command first.", "fault")
+        elif kind == "busy":
+            self.busy = value
+            if value.get("takeover") == "timeout":
+                self.add_log("The previous controller did not stop within 8 s. Check the robot terminal.", "fault")
+            elif value.get("bridge"):
+                self.add_log("A previous controller session is still running on the robot and holding it. "
+                             "Take over to stop it, or wait up to a minute for it to time out.", "warn")
+            else:
+                self.add_log("Another robot program (the jog console or an update) is using the controls. "
+                             "Close it on the robot first.", "warn")
+        elif kind == "log":
+            self.last_detail = value[:300]
+            self.add_log(self.last_detail, "detail", "robot")
+        elif kind == "closed":
+            if self.busy:
+                self.disconnect()
+            elif self.state:
+                self.disconnect(f"Controller connection ended (exit {value}). If the robot is powered, "
+                                "check that the arms, lift, and torso are supported.", "warn")
+            else:
+                self.disconnect(f"The controller did not start (exit {value}).", "fault")
 
-    def release(self, event):
-        key = event.keysym.lower()
-        if key not in self.keys and key != "space":
-            return
-        if key in self.release_jobs:
-            self.root.after_cancel(self.release_jobs.pop(key))
+    def on_status(self, status):
+        now = time.monotonic()
+        old_phase = self.state.get("phase")
+        self.state = status
+        self.last_status = now
+        self.status_times.append(now)
+        if self.waiting:
+            self.waiting = False
+            self.add_log("Robot feedback restored.")
+        if status.get("event_seq", 0) < self.robot_seq:
+            self.robot_seq = 0
+        for seq, level, text in status.get("events", []):
+            if seq > self.robot_seq:
+                self.robot_seq = seq
+                self.add_log(text, level, "robot")
+        phase = status.get("phase")
+        if phase == "idle" and status.get("notice") != self.idle_notice:
+            self.idle_notice = status.get("notice")
+            self.add_log(self.idle_notice, "info", "robot")
+        if status.get("live") and status.get("started"):
+            self.live_started = True
+        if phase != old_phase:
+            self.block_space()
+        self.reply(status, now)
+        self.notify()
 
-        def finish():
-            self.keys.discard(key)
-            self.release_jobs.pop(key, None)
-            if key == "space":
-                self.space_blocked = False
-                self.keys.clear()
-                self.pending_action = ""
-            self.render()
+    def browser_fresh(self, now):
+        return self.focused and now - self.browser_seen < BROWSER_FRESH
 
-        self.release_jobs[key] = self.root.after_idle(finish)
+    def deadman_ready(self, phase=None):
+        """Control keys can act: the robot is drivable and, if required, Space is held."""
+        if self.waiting or (phase or self.phase) not in DRIVE_PHASES:
+            return False
+        return not self.require_space or ("space" in self.keys and not self.space_blocked)
 
-    def check_focus(self):
-        if not self.closing and self.root.focus_displayof() is None:
-            if self.state.get("phase") in ("homing", "resting", "ready") or self.enable_requested:
-                self.stop()
-
-    def stop(self):
-        self.clear_input()
-        self.enable_requested = False
-        self.send({"op": "stop"})
-        self.render("Stop requested." if self.process else None)
-
-    def confirm_release(self):
-        if self.simulation or not (self.live_started or self.enable_requested):
+    def deadman(self, now, phase=None):
+        if not (self.browser_fresh(now) and self.deadman_ready(phase)):
+            return False
+        if self.require_space:
             return True
-        return messagebox.askokcancel(
-            "Disconnect and release torque?",
-            "Disconnecting can release motor torque. Support the arms, lift, and torso first. "
-            "Use Stop to brake and request position hold while connected.", parent=self.root,
-        )
+        # Without Space the page counts as held while focused. After a stop or warning the
+        # robot ignores input until it sees a release. Letting go of every control key is that
+        # release: the robot gets one not-held frame only then, so a key still held cannot
+        # resume motion by itself.
+        if self.state.get("release_required"):
+            return bool(self.keys & CONTROL_KEYS)
+        return True
 
-    def disconnect(self, notice=None):
-        self.clear_input()
-        self.send({"op": "quit"})
-        process, self.process = self.process, None
-        if process:
-            process.stdin.close()
-        self.state = {}
-        self.enable_requested = self.live_started = self.waiting = False
-        self.render(notice)
+    def reply(self, status, now):
+        phase = status.get("phase")
+        frame = {"lease": status["lease"], "speed": self.speed, "arms": self.selection,
+                 "drive_mode": self.drive_mode}
+        if self.op and (phase != self.op[1] or now - self.op[2] > OP_RETRY):
+            self.op = None
+        if self.op:
+            frame.update(deadman=False, keys=[], action=self.op[0])
+        else:
+            deadman = self.deadman(now, phase)
+            drive = sorted(self.armed_keys & DRIVE_KEYS.keys()) if deadman else []
+            if drive:
+                self.last_drive = now
+            if not self.require_space and not drive and now - self.last_drive >= DRIVE_LINGER:
+                # No drive key: brake instead of holding drive mode at zero velocity.
+                frame["drive_mode"] = "pulse"
+            frame.update(deadman=deadman, keys=drive, action=self.pending if deadman else "")
+            self.pending = ""
+        self.send(frame)
 
-    def close(self):
-        if self.confirm_release():
+    def tick(self, now):
+        if self.process and self.state:
+            limit = STARTUP_WAIT if self.state.get("phase") == "homing" else HEARTBEAT_WAIT
+            if now - self.last_status > limit and not self.waiting:
+                self.send({"op": "stop"})
+                self.waiting = True
+                self.block_space()
+                self.add_log("Robot feedback interrupted. Stop requested.", "warn")
+        elif self.process and not self.state and now - self.last_status > CONNECT_WAIT:
+            self.disconnect("The controller did not respond. Check the lab connection and SDK startup.", "fault")
+        self.update_integration()
+        if self.focused and now - self.browser_seen > BROWSER_GONE:
+            self.focused = False
+            self.apply_keys(set())
+            self.focus_lost("The controller page stopped responding.")
+
+    # Operator input ------------------------------------------------------------------
+
+    def block_space(self):
+        if "space" in self.keys:
+            self.space_blocked = True
+        self.armed_keys = set()
+        self.pending = ""
+        self.last_drive = -1e9
+
+    def apply_keys(self, keys):
+        previous = self.keys
+        if "space" in keys and "space" not in previous and (self.phase not in DRIVE_PHASES or self.waiting):
+            self.space_blocked = True
+        if "space" not in keys:
+            self.space_blocked = False
+        self.keys = keys
+        if self.deadman_ready():
+            new = keys - previous - {"space"}
+            # Keys already down before control was possible count only after they are pressed again.
+            self.armed_keys = (self.armed_keys | new) & keys
+            for key in sorted(new):
+                if key in JOG_KEYS and not self.pending:
+                    self.pending = key
+        else:
+            self.armed_keys = set()
+            self.pending = ""
+        self.notify()
+
+    def focus_lost(self, reason):
+        if self.process and self.phase in DRIVE_PHASES:
+            self.stop(f"{reason} Stopped.")
+
+    def update_input(self, client, keys, focused):
+        with self.lock:
+            if client is None or client != self.owner:
+                return False
+            now = time.monotonic()
+            was_focused = self.focused and now - self.browser_seen < BROWSER_GONE
+            self.browser_seen = now
+            self.focused = focused
+            keys = {key for key in keys if isinstance(key, str) and (key in CONTROL_KEYS or key == "space")}
+            if not focused:
+                keys = set()
+            if was_focused and not focused:
+                self.apply_keys(set())
+                self.focus_lost("The controller page lost focus.")
+            self.apply_keys(keys)
+            return True
+
+    def stop(self, reason="Stop requested."):
+        with self.lock:
+            self.op = None
+            self.block_space()
+            if self.send({"op": "stop"}):
+                self.add_log(reason, "warn")
+            self.notify()
+
+    def command(self, client, op, value=None):
+        with self.lock:
+            if op == "claim":
+                if client != self.owner:
+                    self.owner = client
+                    self.focused = False
+                    self.apply_keys(set())
+                return {"ok": True}
+            if client is None or client != self.owner:
+                return {"ok": False, "error": "Another browser tab has control."}
+            phase = self.phase
+            if op == "connect":
+                self.connect()
+            elif op == "takeover":
+                self.connect(takeover=True)
+            elif op == "disconnect":
+                self.disconnect("Disconnected.")
+            elif op == "stop":
+                self.stop()
+            elif op in OPERATIONS:
+                if not self.process or phase not in OP_PHASES[op] or self.waiting:
+                    return {"ok": False, "error": f"{OP_LABELS[op]} is not available now."}
+                self.op = (op, phase, time.monotonic())
+                self.block_space()
+                self.add_log(f"{OP_LABELS[op]} requested.")
+            elif op == "speed":
+                if type(value) is not int or not 0 <= value < len(SPEED_LEVELS):
+                    return {"ok": False, "error": "Unknown speed."}
+                self.speed = value
+            elif op == "arms":
+                if value not in ARM_SELECTIONS:
+                    return {"ok": False, "error": "Unknown arm selection."}
+                self.selection = value
+            elif op == "require_space":
+                self.require_space = value is True
+                self.block_space()
+                self.add_log("Space must be held for every control." if self.require_space else
+                             "Space is no longer required. Keys act while this page has focus.")
+            elif op == "drive_mode":
+                if value not in DRIVE_MODES:
+                    return {"ok": False, "error": "Unknown brake setting."}
+                self.drive_mode = value
+                self.add_log("Chassis brakes when Space is released." if value == "latched" else
+                             "Chassis brakes whenever no drive key is held.")
+            elif op == "monitor":
+                self.set_monitor(bool(value))
+            elif op == "camera":
+                self.set_camera(bool(value))
+            elif op == "map_mode":
+                if value not in MAP_MODES:
+                    return {"ok": False, "error": "Unknown map setting."}
+                self.map_mode = value
+                self.update_integration()
+            elif op in ("map_reset", "map_save"):
+                if not self.camera:
+                    return {"ok": False, "error": "Start the camera first."}
+                self.camera.send({"op": "reset" if op == "map_reset" else "save"})
+            elif op == "quit":
+                self.quit_requested.set()
+            else:
+                return {"ok": False, "error": "Unknown command."}
+            self.notify()
+            return {"ok": True}
+
+    # CAN monitor ------------------------------------------------------------------------
+
+    def set_monitor(self, on):
+        if not on:
+            self.monitor_starting = False
+            process, self.monitor_process = self.monitor_process, None
+            if process:
+                process.terminate()
+            self.monitor = None
+            self.monitor_note = None
+            return
+        if self.monitor_process:
+            return
+        if self.simulation:
+            self.monitor_note = "The CAN monitor reads the robot's can5 bus. It is unavailable in the simulator."
+            return
+        self.monitor_note = "Starting the read-only can5 monitor…"
+        self.monitor_starting = True
+        threading.Thread(target=self._monitor, daemon=True).start()
+
+    def _monitor(self):
+        if not self.ensure_master():
+            with self.lock:
+                self.monitor_starting = False
+                self.monitor_note = "Could not reach the robot."
+                self.notify()
+            return
+        process = subprocess.Popen(self.ssh(f'exec python3 -Bu "{REMOTE_DIR}/can_monitor.py"'),
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   start_new_session=True)
+        with self.lock:
+            self.monitor_starting = False
+            if self.closing:
+                process.terminate()
+                return
+            self.monitor_process = process
+        with process.stdout:
+            for line in process.stdout:
+                with self.lock:
+                    if self.monitor_process is not process:
+                        break
+                    try:
+                        self.monitor = json.loads(line)
+                        self.monitor_note = None
+                    except ValueError:
+                        self.monitor_note = line.decode(errors="replace").strip()[:200]
+                    self.notify()
+        process.wait()
+        with self.lock:
+            if self.monitor_process is process:
+                self.monitor_process = None
+                self.monitor_note = f"Monitor stopped (exit {process.returncode})."
+                self.notify()
+
+    # Camera and live map -------------------------------------------------------------------
+
+    def mapping_pose(self):
+        """True while the arms are folded for mapping, including a pause taken in mapping mode."""
+        phase = self.state.get("phase")
+        return phase == "mapping" or phase == "paused" and self.state.get("resume_phase") == "mapping"
+
+    def wants_integration(self):
+        return bool(self.camera) and (self.map_mode == "on" or self.map_mode == "auto" and self.mapping_pose())
+
+    def update_integration(self):
+        wanted = self.wants_integration()
+        if self.camera and wanted != self.integrating:
+            self.integrating = wanted
+            self.camera.send({"op": "integrate", "on": wanted})
+
+    def sim_robot_state(self):
+        with self.lock:
+            command = self.state.get("command") or (0.0, 0.0, 0.0)
+            return tuple(command), (self.state.get("body") or {}).get("head")
+
+    def set_camera(self, on):
+        if not on:
+            self.camera_starting = False
+            camera, self.camera = self.camera, None
+            if camera:
+                camera.stop()
+            self.camera_pose = None
+            self.integrating = None
+            self.hub.reset()
+            self.camera_note = None
+            return
+        if self.camera or self.camera_starting:
+            return
+        if self.simulation:
+            self.camera = SimCamera(self.hub, self.camera_report, self.sim_robot_state)
+            self.integrating = None
+            self.update_integration()
+            return
+        self.camera_starting = True
+        self.camera_note = "Starting the ZED Mini on the robot…"
+        threading.Thread(target=self._start_camera, daemon=True).start()
+
+    def _start_camera(self):
+        reachable = self.ensure_master()
+        with self.lock:
+            if not self.camera_starting or self.closing:
+                self.camera_starting = False
+                return
+            self.camera_starting = False
+            if not reachable:
+                self.camera_note = "Could not reach the robot."
+                self.notify()
+                return
+            try:
+                self.camera = RemoteCamera(self.ssh(CAMERA_REMOTE), self.hub, self.camera_report)
+            except OSError as exc:
+                self.camera_note = f"Could not start the camera stream: {exc}"
+                self.notify()
+                return
+            self.integrating = None
+            self.update_integration()
+            self.notify()
+
+    def camera_report(self, kind, value):
+        with self.lock:
+            if kind == "pose":
+                self.camera_pose = value
+                self.hub.put_pose(value)
+                self.camera_note = None
+            elif kind == "status":
+                level = value.get("level", "info")
+                if value.get("saved"):
+                    self.camera_saved = value["saved"]
+                if level != "detail":
+                    self.camera_note = value.get("text")
+                self.add_log(value.get("text", ""), level, "camera")
+            elif kind == "exit":
+                source, code = value
+                if source is self.camera:
+                    self.camera = None
+                    self.camera_pose = None
+                    self.integrating = None
+                    self.camera_note = f"Camera stream stopped (exit {code}). " + (self.camera_note or "")
+            self.notify()
+
+    def camera_snapshot(self):
+        pose = self.camera_pose
+        return {"on": bool(self.camera) or self.camera_starting, "note": self.camera_note, "pose": pose,
+                "map_mode": self.map_mode, "integrating": bool(pose and pose.get("integrating")),
+                "wants_integration": self.wants_integration(), "voxels": self.hub.count,
+                "saved": self.camera_saved}
+
+    # Page state ---------------------------------------------------------------------------
+
+    def snapshot(self, since):
+        now = time.monotonic()
+        times = self.status_times
+        rate = (len(times) - 1) / (times[-1] - times[0]) if len(times) > 1 and times[-1] > times[0] else None
+        robot = {key: value for key, value in self.state.items() if key != "events"}
+        return {
+            "phase": "interrupted" if self.waiting and self.state else self.phase,
+            "app": {
+                "simulation": self.simulation, "robot": self.robot, "connected": bool(self.process),
+                "connecting": self.connecting, "waiting": self.waiting, "busy": self.busy,
+                "live_started": self.live_started, "keys": sorted(self.keys), "armed_keys": sorted(self.armed_keys),
+                "deadman": self.deadman(now), "space_blocked": self.space_blocked,
+                "require_space": self.require_space,
+                "focused": self.focused, "owner": self.owner, "speed": self.speed, "selection": self.selection,
+                "drive_mode": self.drive_mode, "pending_op": self.op[0] if self.op else None,
+                "status_hz": None if rate is None else round(rate, 1),
+                "status_age": round(now - self.last_status, 2) if self.state else None,
+                "monitor_on": bool(self.monitor_process) or self.monitor_starting,
+                "monitor": self.monitor, "monitor_note": self.monitor_note,
+                "camera": self.camera_snapshot(),
+            },
+            "robot": robot,
+            "log": [entry for entry in self.log if entry["seq"] > since],
+            "log_seq": self.log_seq,
+        }
+
+    def shutdown(self):
+        with self.lock:
             self.closing = True
-            self.disconnect()
-            self.root.destroy()
+            self.set_monitor(False)
+            self.set_camera(False)
+            self.disconnect("Controller app closed.")
+            self.notify()
+
+
+def number(query, name):
+    try:
+        return max(0, int(query.get(name, ["0"])[0]))
+    except ValueError:
+        return 0
+
+
+def make_server(controller, port, token):
+    page = PAGE
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "ARXController/3"
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args):
+            pass
+
+        def host_ok(self):
+            return self.headers.get("Host", "") in self.server.allowed_hosts
+
+        def respond(self, code, body, content_type="application/json", extra=()):
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            for name, value in extra:
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            url = urlparse(self.path)
+            query = parse_qs(url.query)
+            if not self.host_ok() or query.get("t", [""])[0] != token:
+                return self.respond(403, b"Forbidden. Reopen the controller from its launcher.", "text/plain")
+            if url.path == "/":
+                policy = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                          "connect-src 'self'; img-src data: blob:; frame-ancestors 'none'; base-uri 'none'")
+                return self.respond(200, page.read_bytes(), "text/html; charset=utf-8",
+                                    (("Content-Security-Policy", policy), ("Referrer-Policy", "no-referrer")))
+            if url.path == "/events":
+                try:
+                    since = int(query.get("since", ["0"])[0])
+                except ValueError:
+                    since = 0
+                return self.stream(since)
+            if url.path == "/camera":
+                kind = query.get("kind", ["color"])[0]
+                if kind not in ("color", "depth"):
+                    return self.respond(400, b"Unknown view", "text/plain")
+                seq, mime, data = controller.hub.wait_image(kind, number(query, "after"))
+                if not data or seq <= number(query, "after"):
+                    return self.respond(204, b"", "text/plain")
+                return self.respond(200, data, mime, (("X-Frame-Seq", str(seq)),))
+            if url.path == "/map":
+                epoch, start, end, data = controller.hub.wait_map(number(query, "epoch"), number(query, "since"))
+                return self.respond(200, data, "application/octet-stream",
+                                    (("X-Map-Epoch", str(epoch)), ("X-Map-Start", str(start)),
+                                     ("X-Map-End", str(end))))
+            return self.respond(404, b"Not found", "text/plain")
+
+        def do_POST(self):
+            if not self.host_ok() or self.headers.get("X-ARX-Token") != token:
+                return self.respond(403, b'{"ok": false, "error": "Forbidden"}')
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 4096:
+                    raise ValueError
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict):
+                    raise ValueError
+            except ValueError:
+                return self.respond(400, b'{"ok": false, "error": "Bad request"}')
+            client = body.get("client") if isinstance(body.get("client"), str) else None
+            if self.path == "/api/input":
+                keys = body.get("keys") if isinstance(body.get("keys"), list) else []
+                result = {"ok": controller.update_input(client, keys[:32], body.get("focused") is True)}
+            elif self.path == "/api/command":
+                result = controller.command(client, body.get("op"), body.get("value"))
+            else:
+                return self.respond(404, b'{"ok": false}')
+            return self.respond(200, json.dumps(result).encode())
+
+        def stream(self, since):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            version = -1
+            try:
+                while not controller.closing:
+                    with controller.changed:
+                        controller.changed.wait_for(lambda: controller.version != version or controller.closing,
+                                                    timeout=1.0)
+                        version = controller.version
+                        data = controller.snapshot(since)
+                        since = data["log_seq"]
+                    self.wfile.write(b"data: " + json.dumps(data, allow_nan=False).encode() + b"\n\n")
+                    self.wfile.flush()
+                    time.sleep(0.02)
+                self.wfile.write(b"event: closed\ndata: {}\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ValueError):
+                pass
+
+    server = None
+    for candidate in (port, 0):
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", candidate), Handler)
+            break
+        except OSError:
+            continue
+    if server is None:
+        raise OSError("Could not open a local port for the controller page")
+    server.daemon_threads = True
+    bound = server.server_address[1]
+    server.allowed_hosts = {f"127.0.0.1:{bound}", f"localhost:{bound}"}
+    return server
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--socket", default=os.environ.get("ARX_SSH_SOCKET"))
+    parser.add_argument("--socket", default=os.environ.get("ARX_SSH_SOCKET"),
+                        help="Shared SSH control socket from the launcher")
+    parser.add_argument("--robot", default=os.environ.get("ARX_ROBOT", DEFAULT_ROBOT))
     parser.add_argument("--simulation", action="store_true")
-    parser.add_argument("--connect", action="store_true")
+    parser.add_argument("--sim-stall", action="store_true", help="Simulator: wheels never report motion")
+    parser.add_argument("--connect", action="store_true", help="Connect without a control socket")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
-    root = tk.Tk()
-    ui = ControllerWindow(root, args.socket, args.simulation or not (args.socket or args.connect))
-    if args.connect:
-        root.after_idle(ui.connect)
-    root.mainloop()
+    simulation = args.simulation or not (args.socket or args.connect)
+    controller = Controller(args.robot, args.socket, simulation, args.sim_stall)
+    token = secrets.token_urlsafe(18)
+    server = make_server(controller, args.port, token)
+    url = f"http://127.0.0.1:{server.server_address[1]}/?t={token}"
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, lambda *_: controller.quit_requested.set())
+    threading.Thread(target=controller.run, daemon=True).start()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"ARX controller page: {url}", flush=True)
+    print("Keep this window open while using the robot. Closing it disconnects the controller.", flush=True)
+    if not args.no_browser:
+        subprocess.run(["/usr/bin/open", url], check=False)
+    try:
+        while not controller.quit_requested.wait(0.5):
+            pass
+    finally:
+        controller.shutdown()
+        time.sleep(0.3)
+        server.shutdown()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
