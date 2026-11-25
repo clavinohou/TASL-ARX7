@@ -59,6 +59,8 @@ class CameraHub:
             # Sequence numbers keep counting so a page waiting for "after N" sees the next stream.
             self.images = {kind: (self.image_seq, None, b"") for kind in self.images}
             self.pose = None
+            self.epoch += 1
+            self.records.clear()
             self.cond.notify_all()
 
     def wants(self, kind, within=2.0):

@@ -43,6 +43,11 @@ chmod +x "$SDK_FILE"
 say "Verifying the installer's built-in checksum"
 bash "./$SDK_FILE" --check 2>&1 | tail -c 200
 
+# Ask for the password once and keep sudo alive, so the long, slow steps later
+# (the ZED installer runs sudo itself) don't stop at a second password prompt.
+sudo -v
+( while kill -0 $$ 2>/dev/null; do sudo -n true; sleep 60; done ) &
+
 say "Installing apt dependencies (sudo)"
 sudo apt-get update
 sudo apt-get install -y zstd curl python3-pip python3-dev python3-venv libusb-1.0-0 udev

@@ -331,6 +331,12 @@ dialog p { color: var(--muted); margin: 0 0 18px; }
       <button id="mapReset" class="btn small ghost" type="button" title="Clear the map on the robot and here">Reset</button>
       <button id="mapSave" class="btn small ghost" type="button" title="Save the map as a .ply file on the robot">Save .ply</button>
     </div>
+    <div class="row"><span class="label">Source</span>
+      <div class="seg" id="mapSourceSeg">
+        <button type="button" data-v="voxel">Voxel</button>
+        <button type="button" data-v="zed">ZED Fusion</button>
+      </div>
+    </div>
     <div class="row"><span class="label">Build</span>
       <div class="seg" id="mapSeg">
         <button type="button" data-v="auto" title="Build the map only in mapping mode, with the arms folded out of view">Auto</button>
@@ -339,7 +345,7 @@ dialog p { color: var(--muted); margin: 0 0 18px; }
       </div>
     </div>
     <div class="stats">
-      <div class="stat"><b id="statVoxels">0</b><span>voxels</span></div>
+      <div class="stat"><b id="statVoxels">0</b><span id="statMapUnits">voxels</span></div>
       <div class="stat"><b id="statFps">—</b><span>camera fps</span></div>
       <div class="stat"><b id="statPos">—</b><span>position m</span></div>
     </div>
@@ -351,7 +357,7 @@ dialog p { color: var(--muted); margin: 0 0 18px; }
   <div class="hud hud-view">
     <div class="seg" id="viewSeg">
       <button type="button" data-v="chase" title="Follow behind the robot">Chase</button>
-      <button type="button" data-v="top" title="Top-down, robot heading up">Top</button>
+      <button type="button" data-v="top" title="Top-down, map heading fixed">Top</button>
       <button type="button" data-v="orbit" title="Orbit around the robot">Orbit</button>
     </div>
     <span class="quiet">Drag to look around · scroll to zoom · double-click to recenter</span>
@@ -679,9 +685,10 @@ function render() {
 function renderChassis(app, robot) {
   const levels = robot.speed_levels || [0.15, 0.2, 0.25];
   const yawPer = robot.yaw_per_linear || 2;
+  const straightScale = robot.straight_scale || robot.longitudinal_scale || 1;
   const seg = $("speedSeg");
-  if (seg.children.length !== levels.length) seg.innerHTML = levels.map((v, i) => `<button type="button" data-v="${i}">${v.toFixed(2)} m/s</button>`).join("");
-  [...seg.children].forEach((b, i) => { b.className = i === app.speed ? "on" : ""; b.title = `${levels[i].toFixed(2)} m/s, turn ${(levels[i] * yawPer).toFixed(2)} rad/s`; });
+  if (seg.children.length !== levels.length) seg.innerHTML = levels.map((v, i) => `<button type="button" data-v="${i}">${(v * straightScale).toFixed(2)} m/s</button>`).join("");
+  [...seg.children].forEach((b, i) => { b.className = i === app.speed ? "on" : ""; b.title = `${(levels[i] * straightScale).toFixed(2)} m/s straight, turn ${(levels[i] * yawPer).toFixed(2)} rad/s`; });
   [...$("brakeSeg").children].forEach((b) => b.className = b.dataset.v === app.drive_mode ? "on" : "");
   const tag = $("chassisTag");
   if (robot.wheel_warning) { tag.textContent = robot.wheel_warning; tag.className = "tag bad"; }
@@ -693,7 +700,7 @@ function renderChassis(app, robot) {
   $("sent").textContent = `x ${signed(cmd[0])}  y ${signed(cmd[1])} m/s  yaw ${signed(cmd[2])} rad/s  ·  mode ${robot.armed ? 1 : 2}`;
 
   // Top view: forward is up, +y (left) is left.
-  const max = 0.3, cx = 130, cy = 85, scale = 62 / max;
+  const max = Math.max(0.3, levels[levels.length - 1] * straightScale), cx = 130, cy = 85, scale = 62 / max;
   const arrow = (v, color, width) => {
     const dx = -v[1] * scale, dy = -v[0] * scale;
     if (Math.hypot(dx, dy) < 1.5) return "";
@@ -705,7 +712,8 @@ function renderChassis(app, robot) {
   };
   const yawArc = (yaw, color) => {
     if (Math.abs(yaw) < 0.01) return "";
-    const r = 52, sweep = Math.max(-1, Math.min(1, yaw / 0.6)) * 1.6;
+    const maxYaw = levels[levels.length - 1] * yawPer;
+    const r = 52, sweep = Math.max(-1, Math.min(1, yaw / maxYaw)) * 1.6;
     const a0 = -Math.PI / 2, a1 = a0 - sweep;
     const p0 = [cx + r * Math.cos(a0), cy + r * Math.sin(a0)], p1 = [cx + r * Math.cos(a1), cy + r * Math.sin(a1)];
     return `<path d="M${p0} A${r} ${r} 0 0 ${sweep > 0 ? 0 : 1} ${p1}" fill="none" stroke="${color}" stroke-width="4" stroke-linecap="round"/>
@@ -714,14 +722,14 @@ function renderChassis(app, robot) {
   const body = robot.armed ? "#67dcae" : "#3a4c5d";
   $("baseViz").innerHTML = `
     <circle cx="${cx}" cy="${cy}" r="${0.15 * scale}" fill="none" stroke="#253341" stroke-dasharray="3 4"/>
-    <circle cx="${cx}" cy="${cy}" r="${0.3 * scale}" fill="none" stroke="#253341" stroke-dasharray="3 4"/>
+    <circle cx="${cx}" cy="${cy}" r="${max * scale}" fill="none" stroke="#253341" stroke-dasharray="3 4"/>
     <rect x="${cx - 26}" y="${cy - 32}" width="52" height="64" rx="10" fill="#18232e" stroke="${body}" stroke-width="2"/>
     <path d="M${cx - 8} ${cy - 22} L${cx} ${cy - 30} L${cx + 8} ${cy - 22}" fill="none" stroke="${body}" stroke-width="2"/>
     ${[[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([sx, sy]) => `<rect x="${cx + sx * 30 - 5}" y="${cy + sy * 22 - 9}" width="10" height="18" rx="3" fill="#2a3a49"/>`).join("")}
     ${yawArc(req[2], "#4b6378")}${yawArc(cmd[2], "#ffc663")}
     ${arrow(req, "#4b6378", 3)}${arrow(cmd, "#ffc663", 4)}
     <text x="8" y="16" fill="#7a8b9a" font-size="10" font-family="ui-monospace,Menlo">gray requested · amber sent</text>
-    <text x="${cx + 0.3 * scale + 3}" y="${cy + 3}" fill="#7a8b9a" font-size="9" font-family="ui-monospace,Menlo">0.3</text>`;
+    <text x="${cx + max * scale + 3}" y="${cy + 3}" fill="#7a8b9a" font-size="9" font-family="ui-monospace,Menlo">${max.toFixed(1)}</text>`;
   const wheels = robot.wheels;
   $("wheels").innerHTML = [0, 1, 2, 3].map((i) => {
     const value = wheels ? wheels[i] : null;
@@ -818,6 +826,7 @@ function renderMonitor(app) {
   const c = m.count || {};
   $("monitorBody").innerHTML = `<table>
     <tr><th>Wheels</th><td colspan="4">${m.wheels ? m.wheels.map((v) => signed(v, 3)).join("  ") : "—"}</td></tr>
+    <tr><th>Wheel frame 0x702</th><td colspan="4">${m.wheel_raw || "—"}</td></tr>
     <tr><th>Peak |wheel|</th><td colspan="4">${m.peak.map((v) => v.toFixed(3)).join("  ")}</td></tr>
     <tr><th>Chassis cmd</th><td colspan="4">${drive(m.drive)}</td></tr>
     <tr><th>Last drive</th><td colspan="4">${drive(m.last_drive)}</td></tr>
@@ -848,7 +857,7 @@ feedLoop("color", $("feedColor"), $("feedColorEmpty"));
 feedLoop("depth", $("feedDepth"), $("feedDepthEmpty"));
 
 // Voxel map ------------------------------------------------------------------------------
-const VOXEL = 0.05;
+const VOXEL = 0.025;
 const voxels = { epoch: 0, consumed: 0, count: 0, cap: 0, pos: new Float32Array(0), col: new Uint8Array(0),
   index: new Map(), dirtyFrom: Infinity, dirtyTo: -1, resized: false };
 function voxelReset() {
@@ -937,7 +946,7 @@ function rotate(q, v) {  // quaternion [x, y, z, w] applied to vector v
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
 // 3D world -----------------------------------------------------------------------------------
-const view = { mode: "chase", yaw: 0, pitch: 0, zoom: 4.2, orbitYaw: 0.9, orbitPitch: 0.55, smoothYaw: null,
+const view = { mode: "top", yaw: 0, pitch: 0, zoom: 5, orbitYaw: 0.9, orbitPitch: 0.55, smoothYaw: null,
   base: null, trail: [] };
 const world = (() => {
   const canvas = $("world");
@@ -1051,8 +1060,8 @@ const world = (() => {
     uploadVoxels();
 
     const cam = snap && snap.app.camera && snap.app.camera.pose;
-    const camPos = cam ? cam.p : [0, 0, 0];
-    const q = cam ? cam.q : [0, 0.12, 0, 0.99];
+    const display = cam && (cam.display_pose || (!cam.mapping_fault && [cam.p, cam.q]));
+    const [camPos, q] = display || [[0, 0, 0], [0, 0.12, 0, 0.99]];
     const fwd = rotate(q, [1, 0, 0]);
     const yaw = Math.atan2(fwd[1], fwd[0]);
     const floor = estimateFloor(camPos[2]);
@@ -1061,7 +1070,7 @@ const world = (() => {
     for (let i = 0; i < 3; i++) view.base[i] += (target[i] - view.base[i]) * 0.35;
     const base = view.base;
     const last = view.trail[view.trail.length - 1];
-    if (cam && (!last || Math.hypot(base[0] - last[0], base[1] - last[1]) > 0.05)) {
+    if (display && (!last || Math.hypot(base[0] - last[0], base[1] - last[1]) > 0.05)) {
       view.trail.push([base[0], base[1]]); if (view.trail.length > 4000) view.trail.shift();
     }
     view.smoothYaw = view.smoothYaw == null ? yaw : view.smoothYaw + wrap(yaw - view.smoothYaw) * 0.06;
@@ -1070,7 +1079,8 @@ const world = (() => {
     let eye, up = [0, 0, 1];
     if (view.mode === "top") {
       eye = [focus[0], focus[1], focus[2] + view.zoom * 2.4];
-      up = [Math.cos(view.smoothYaw + view.yaw), Math.sin(view.smoothYaw + view.yaw), 0];
+      // Keep the room fixed as the robot turns. Dragging rotates the view manually.
+      up = [Math.cos(view.yaw), Math.sin(view.yaw), 0];
     } else {
       const az = view.mode === "chase" ? view.smoothYaw + Math.PI + view.yaw : view.orbitYaw;
       const el = view.mode === "chase" ? Math.max(-0.2, Math.min(1.45, 0.36 + view.pitch)) : view.orbitPitch;
@@ -1147,31 +1157,59 @@ $("viewSeg").onclick = (e) => {
 };
 $("cameraToggle").onclick = () => command("camera", !(snap && snap.app.camera && snap.app.camera.on));
 $("mapSeg").onclick = (e) => { const b = e.target.closest("button"); if (b) command("map_mode", b.dataset.v); };
-$("mapReset").onclick = async () => { if (await ask("Clear the map?", "This removes every voxel collected so far, on the robot and here. Save first if you want to keep it.", [["Clear map", true, "warn"]]) === true) command("map_reset"); };
+$("mapSourceSeg").onclick = async (e) => {
+  const button = e.target.closest("button"), camera = snap && snap.app.camera;
+  if (!button || !camera || button.dataset.v === camera.map_source) return;
+  if (camera.on && (camera.voxels || camera.integrating)) {
+    const confirmed = await ask("Switch map source?", "Switching starts a fresh map. Save the current map first if you want to keep it.",
+                                [["Switch source", true, "warn"]]);
+    if (confirmed !== true) return;
+  }
+  command("map_source", button.dataset.v);
+};
+$("mapReset").onclick = async () => { if (await ask("Clear the map?", "This removes the current reconstruction from the robot and dashboard. Save first if you want to keep it.", [["Clear map", true, "warn"]]) === true) command("map_reset"); };
 $("mapSave").onclick = () => command("map_save");
 
 function renderMapHud(app, robot, phase) {
   const camera = app.camera || {};
   const pose = camera.pose;
   $("cameraToggle").textContent = camera.on ? "Stop camera" : "Start camera";
-  $("mapReset").disabled = !camera.on; $("mapSave").disabled = !camera.on;
+  $("mapReset").disabled = $("mapSave").disabled = !camera.on || camera.map_source_pending;
+  [...$("mapSourceSeg").children].forEach((b) => {
+    const selected = b.dataset.v === (camera.map_source || "voxel");
+    b.className = selected ? "on" : "";
+    b.setAttribute("aria-pressed", String(selected));
+    b.disabled = !!camera.map_source_pending || (app.simulation && b.dataset.v === "zed");
+  });
+  $("statMapUnits").textContent = camera.map_source === "zed" ? "preview points" : "voxels";
   [...$("mapSeg").children].forEach((b) => b.className = b.dataset.v === camera.map_mode ? "on" : "");
   [...$("viewSeg").children].forEach((b) => b.className = b.dataset.v === view.mode ? "on" : "");
   const chip = $("trackChip");
   if (!camera.on) { chip.textContent = "Camera off"; chip.className = "chip"; }
   else if (!pose) { chip.textContent = "Starting…"; chip.className = "chip warn"; }
+  else if (pose.mapping_fault) { chip.textContent = "Map paused"; chip.className = "chip warn"; }
   else if (pose.tracking !== "OK") { chip.textContent = `Tracking ${pose.tracking.toLowerCase()}`; chip.className = "chip warn"; }
+  else if (pose.map_turn_pause) { chip.textContent = "Turn pause"; chip.className = "chip warn"; }
   else if (camera.integrating) { chip.textContent = pose.simulated ? "Mapping · simulated" : "Mapping"; chip.className = "chip good"; }
   else { chip.textContent = pose.simulated ? "Tracking · simulated" : "Tracking"; chip.className = "chip"; }
   $("statVoxels").textContent = voxels.count.toLocaleString();
   $("statFps").textContent = pose ? fmt(pose.fps, 0) : "—";
-  $("statPos").textContent = pose ? `${pose.p[0].toFixed(1)}, ${pose.p[1].toFixed(1)}` : "—";
+  const mapPosition = pose && (pose.display_pose ? pose.display_pose[0] : !pose.mapping_fault && pose.p);
+  $("statPos").textContent = mapPosition ? `${mapPosition[0].toFixed(1)}, ${mapPosition[1].toFixed(1)}` : "—";
   let note;
-  if (!camera.on) note = "Start the camera to see the feeds and build the map.";
+  if (camera.map_error) note = camera.map_error;
+  else if (pose && pose.mapping_fault) {
+    const recovery = pose.recovery_recognized ? "Scene recognized. Hold still at a previously mapped view." :
+      "Waiting for scene recognition. Return slowly to a previously mapped view.";
+    note = `${pose.mapping_fault} Map pose frozen. ${recovery}`;
+  }
+  else if (camera.map_source_pending) note = "Switching map source…";
+  else if (!camera.on) note = "Start the camera to see the feeds and build the map.";
   else if (camera.note && !pose) note = camera.note;
   else if (camera.map_mode === "off") note = "Map building is off. The view still tracks the robot.";
   else if (camera.map_mode === "auto" && !camera.wants_integration) note = "Auto: the map builds in Mapping mode, with the arms folded out of view.";
   else if (pose && pose.tracking !== "OK") note = "Waiting for camera tracking. Point the camera at a textured, well-lit area.";
+  else if (pose && pose.map_turn_pause) note = "Map paused during rotation. It resumes once the camera settles.";
   else if (camera.map_mode === "on" && phase !== "mapping") note = "Building always. Anything in view, including the arms, is added.";
   else note = camera.saved ? `Last save on the robot: ${camera.saved}` : "Building the map. Drive slowly for the best result.";
   $("mapNote").textContent = note;

@@ -147,7 +147,7 @@ class Operations(unittest.TestCase):
         self.clock.run(0.2, deadman=True, keys=["w"], speed=2, arms="left")
         self.assertEqual(self.bridge.session.speed_level, 2)
         self.assertEqual(self.bridge.session.selection, "left")
-        self.assertAlmostEqual(self.bridge.session.velocity[0], 0.25)
+        self.assertAlmostEqual(self.bridge.session.velocity[0], 1.20)
 
 
 if __name__ == "__main__":

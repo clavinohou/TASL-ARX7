@@ -18,6 +18,7 @@ SCALE = 10 / 32768
 class Feedback:
     def __init__(self):
         self.wheels = None
+        self.wheel_raw = None
         self.peak = [0.0] * 4
         self.drive = None
         self.last_drive = None
@@ -32,6 +33,7 @@ class Feedback:
         if ident == 0x702 and not local:
             speed = [value * SCALE for value in struct.unpack(">4h", data)]
             self.wheels = (now, speed)
+            self.wheel_raw = (now, data.hex(" "))
             self.peak = [max(previous, abs(value)) for previous, value in zip(self.peak, speed)]
             self.count["wheel_reports"] += 1
         elif ident == 0x701 and local:
@@ -66,7 +68,7 @@ class Feedback:
             return value[1] if value and now - value[0] < EXPIRES else None
 
         return {
-            "wheels": recent(self.wheels), "peak": self.peak, "drive": recent(self.drive),
+            "wheels": recent(self.wheels), "wheel_raw": recent(self.wheel_raw), "peak": self.peak, "drive": recent(self.drive),
             "last_drive": self.last_drive, "switch": recent(self.switch), "count": self.count,
             "motors": {label: {"id": ident, "feedback": recent(self.motors.get(ident)),
                                "command": recent(self.motor_commands.get(ident))}

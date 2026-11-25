@@ -94,6 +94,9 @@ class Controller:
         self.camera_pose = None
         self.camera_saved = None
         self.map_mode = "auto"
+        self.map_source = "voxel"
+        self.map_source_pending = False
+        self.map_error = None
         self.integrating = None
         self.closing = False
         self.quit_requested = threading.Event()
@@ -119,7 +122,7 @@ class Controller:
 
     def ssh(self, remote):
         command = ["/usr/bin/ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-                   "-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=2", *SSH_OPTIONS]
+                   "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=4", *SSH_OPTIONS]
         if self.socket_path:
             command += ["-S", self.socket_path, "-o", "ProxyCommand=/usr/bin/false"]
         return command + [self.robot, remote]
@@ -134,9 +137,9 @@ class Controller:
             return True
         self.add_log("The SSH session to the robot ended. Enter the robot password in the Terminal window "
                      "if it asks.", "warn")
-        master = subprocess.run(["/usr/bin/ssh", "-fNT", "-M", "-S", self.socket_path, "-o", "ConnectTimeout=6",
-                                 "-o", "NumberOfPasswordPrompts=1", "-o", "ServerAliveInterval=5",
-                                 "-o", "ServerAliveCountMax=2", *SSH_OPTIONS, self.robot])
+        master = subprocess.run(["/usr/bin/ssh", "-fNT", "-M", "-S", self.socket_path, "-o", "ConnectTimeout=4",
+                                 "-o", "ConnectionAttempts=3", "-o", "NumberOfPasswordPrompts=1", "-o", "ServerAliveInterval=5",
+                                 "-o", "ServerAliveCountMax=4", *SSH_OPTIONS, self.robot])
         if master.returncode != 0:
             self.add_log("Could not sign into the robot. Check the lab network and the robot's address.", "fault")
             return False
@@ -483,7 +486,21 @@ class Controller:
                     return {"ok": False, "error": "Unknown map setting."}
                 self.map_mode = value
                 self.update_integration()
+            elif op == "map_source":
+                if value not in ("voxel", "zed") or (value == "zed" and self.simulation):
+                    return {"ok": False, "error": "ZED Fusion requires the robot camera."}
+                if self.map_source_pending:
+                    return {"ok": False, "error": "Wait for the map source to finish switching."}
+                self.map_error = None
+                if value != self.map_source:
+                    if self.camera:
+                        self.map_source_pending = True
+                        self.camera.send({"op": "source", "source": value})
+                    else:
+                        self.map_source = value
             elif op in ("map_reset", "map_save"):
+                if self.map_source_pending:
+                    return {"ok": False, "error": "Wait for the map source to finish switching."}
                 if not self.camera:
                     return {"ok": False, "error": "Start the camera first."}
                 self.camera.send({"op": "reset" if op == "map_reset" else "save"})
@@ -572,6 +589,7 @@ class Controller:
     def set_camera(self, on):
         if not on:
             self.camera_starting = False
+            self.map_source_pending = False
             camera, self.camera = self.camera, None
             if camera:
                 camera.stop()
@@ -610,6 +628,9 @@ class Controller:
                 return
             self.integrating = None
             self.update_integration()
+            if self.map_source == "zed":
+                self.map_source_pending = True
+                self.camera.send({"op": "source", "source": "zed"})
             self.notify()
 
     def camera_report(self, kind, value):
@@ -620,6 +641,11 @@ class Controller:
                 self.camera_note = None
             elif kind == "status":
                 level = value.get("level", "info")
+                if value.get("map_source") in ("voxel", "zed"):
+                    self.map_source = value["map_source"]
+                    self.map_source_pending = False
+                    self.map_error = value.get("text") if level == "warn" else None
+                    self.camera_saved = None
                 if value.get("saved"):
                     self.camera_saved = value["saved"]
                 if level != "detail":
@@ -629,6 +655,7 @@ class Controller:
                 source, code = value
                 if source is self.camera:
                     self.camera = None
+                    self.map_source_pending = False
                     self.camera_pose = None
                     self.integrating = None
                     self.camera_note = f"Camera stream stopped (exit {code}). " + (self.camera_note or "")
@@ -637,7 +664,8 @@ class Controller:
     def camera_snapshot(self):
         pose = self.camera_pose
         return {"on": bool(self.camera) or self.camera_starting, "note": self.camera_note, "pose": pose,
-                "map_mode": self.map_mode, "integrating": bool(pose and pose.get("integrating")),
+                "map_mode": self.map_mode, "map_source": self.map_source,
+                "map_source_pending": self.map_source_pending, "map_error": self.map_error, "integrating": bool(pose and pose.get("integrating")),
                 "wants_integration": self.wants_integration(), "voxels": self.hub.count,
                 "saved": self.camera_saved}
 

@@ -68,6 +68,7 @@ init = sl.InitParameters()
 init.camera_resolution = sl.RESOLUTION.HD720
 init.depth_mode = sl.DEPTH_MODE.NEURAL
 init.coordinate_units = sl.UNIT.METER
+init.camera_image_flip = sl.FLIP_MODE.AUTO  # the head mount is upside down; the IMU decides
 cam = sl.Camera()
 status = cam.open(init)
 report("Camera open (HD720, NEURAL depth)", status == sl.ERROR_CODE.SUCCESS, str(status))

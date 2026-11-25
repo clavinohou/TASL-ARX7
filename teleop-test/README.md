@@ -23,10 +23,11 @@ The page is split in two:
 
 - **Left panel: teleop.** Phase and buttons, the input indicator and Space setting, chassis command and wheel feedback, arms, torso/lift/head, events, and the CAN monitor.
 - **The rest: the 3D world.** It shows the voxel map the robot is building and a model of the robot placed at the camera's tracked pose, with its driven path and the camera's view cone.
-  - **Chase** follows behind the robot like a third-person game camera. **Top** looks straight down with the robot's heading up. **Orbit** circles the robot.
+  - **Chase** follows behind the robot like a third-person game camera. **Top** (the default) looks straight down and keeps the map heading fixed as the robot turns. **Orbit** circles the robot.
   - Drag to look around, scroll to zoom, and double-click to recenter.
 - **Top-right corner:** the live RGB feed. **Bottom-right corner:** the live depth view, colored from near (red) to 4 m (blue); black means no depth.
-- **Live map panel (top left of the 3D view):** Start/Stop camera, **Build** (Auto/On/Off), Reset, and Save .ply.
+- **Live map panel (top left of the 3D view):** Start/Stop camera, **Source** (Voxel/ZED Fusion), **Build** (Auto/On/Off), Reset, and Save .ply.
+- **Voxel** uses our reconstruction. **ZED Fusion** uses the SDK's fused point cloud, with a sampled preview in the browser and full cloud export via **Save .ply**. Switching sources clears the current map. Save it first if you want to compare both runs.
 
 The camera runs independently of the robot controls: it can stream before Connect and keeps running after Disconnect until you stop it.
 
@@ -47,14 +48,14 @@ With **Build: Auto** (the default), the map grows only in mapping mode, includin
 ### How the map is built
 
 - The ZED SDK tracks the camera with stereo images and its IMU (gravity-aligned world frame, z up, x forward, origin where the camera started).
-- About 5 times a second, `zed_stream.py` takes a 320×180 point cloud in that world frame and drops points nearer than 0.45 m or farther than 4 m. It bins the rest into 5 cm voxels.
+- About 5 times a second, `zed_stream.py` takes a 640×360 point cloud in that world frame and drops points nearer than 0.45 m or farther than 4 m. It bins the rest into 2.5 cm voxels.
 - A voxel is sent once it has been seen in two frames, which removes most flying pixels. Its averaged color is sent again at 8 and 32 sightings.
 - The Mac keeps the voxel log and the page draws it with WebGL.
 - **Limits of this first version:**
   - There is no loop closure, so a long drive accumulates drift.
   - Voxels are never removed, so people walking by leave trails.
   - The floor height in the 3D view is estimated from the lowest voxels, so the robot model sits on the floor once some floor has been mapped.
-- **Save .ply** writes the map on the robot to `~/zed-setup/maps/map-<time>.ply`; open it in CloudCompare, MeshLab, or Open3D. The robot's NVMe drive is failing, so copy saved maps off promptly or pass `--save-dir` to a USB drive.
+- **Save .ply** writes the map on the robot to `~/zed-setup/maps/map-<time>.ply`; open it in CloudCompare, MeshLab, or Open3D. Pass `--save-dir` to save elsewhere.
 - **Video and control share one SSH connection.** Each stream keeps at most two frames in flight, waiting for the Mac's acknowledgment, so video cannot queue up ahead of control messages on a slow link. If the link chip still turns amber or red while the camera runs, stop the camera.
 
 ## Try the controller offline
@@ -87,7 +88,7 @@ Control keys act as soon as you press them while the page has focus. **Esc** or 
 | Setting | Keys |
 | --- | --- |
 | Arm selection | **Z** left, **X** both, **C** right. Jogs and grippers apply to the selected arms. |
-| Chassis speed | **−** / **=** cycles 0.15, 0.20, 0.25 m/s. Turning is 2 rad/s per m/s: 0.30, 0.40, 0.50 rad/s. |
+| Chassis speed | **−** / **=** cycles straight speeds of 0.72, 0.96, and 1.20 m/s along either axis. Turn rates are 1.125, 1.50, and 1.875 rad/s. |
 | Brake behavior | In the Chassis panel. See below. |
 
 ### Lift ceiling (camera clearance)
@@ -100,10 +101,10 @@ The ceiling is set to **10.0 SDK units** (half travel) for now, because nobody h
 
 | Button | Available | What happens |
 | --- | --- | --- |
-| **Enable** | Standby | Opens both arm SDKs, then the body SDK. Homes both arms in parallel while the SDK calibrates the lift and torso with the chassis braked. Checks that the lift and torso read near zero, then moves to the resting pose: each arm 12 mm outward and 6 mm up from home, lift 0.10 SDK units, torso upright. The page shows a checklist and countdown (30 s to finish homing, 6 s to settle at rest). |
+| **Enable** | Standby | Opens both arm SDKs, then the body SDK. Homes both arms in parallel while the SDK calibrates the lift and torso with the chassis braked. Checks that the lift and torso read near zero (within 0.30 SDK units and 0.08 rad), records those readings as their floor, then moves to the resting pose: each arm 12 mm outward and 6 mm up from home, lift and torso held at their calibrated floors. On the robot the floor reads about 0.20 for the lift and 0.06 rad for the torso: both sit on their stops after calibration. The page shows a checklist and countdown (30 s to finish homing, 6 s to settle at rest). |
 | **STOP / Esc** | Connected | Ready, Paused, Parking: brakes, holds arms at their current joints and the body where it is, and goes to **Paused**. Startup: becomes a fault, which **Recover** can restart. |
 | **Resume** | Paused | Returns to Ready without moving. |
-| **Park** | Ready, Paused | Arms go home, the torso returns upright, and the lift lowers to 0. Shows **Parked** once feedback confirms it. **Return to rest** goes back to the resting pose. |
+| **Park** | Ready, Paused | Arms go home, and the torso and lift return to their calibrated floor (upright, lift at the bottom). Shows **Parked** once feedback confirms it. **Return to rest** goes back to the resting pose. |
 | **Mapping mode** | Ready, Paused | Brakes, folds both arms home and returns the torso upright, leaving the lift where it is. Shows **Mapping mode** once the arms are home. In it, only driving, lift, and head pitch work. **Return to rest** goes back to the resting pose. See Dashboard. |
 | **Recover** | Fault | Startup finished: re-checks all feedback and holds the current pose, then goes to **Paused**. Startup unfinished: restarts homing with the controllers already open. Not offered if an SDK process has died. |
 | **Disconnect / Quit app** | Connected | Ends the robot session. **The SDK can release motor torque at disconnect.** When the robot is live and not parked, the page offers **Park first**. |

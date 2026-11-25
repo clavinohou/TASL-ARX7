@@ -2,6 +2,7 @@
 
 import http.client
 import io
+import math
 from pathlib import Path
 import sys
 import threading
@@ -148,6 +149,22 @@ class MacMapping(unittest.TestCase):
         self.assertFalse(c.command("tab", "map")["ok"])
         self.assertTrue(c.command("tab", "enable")["ok"])
 
+    def test_live_source_switch_waits_for_stream_confirmation(self):
+        c = ready_controller()
+        c.simulation = False
+        sent = []
+        c.camera = type("Camera", (), {"send": staticmethod(sent.append)})()
+
+        self.assertTrue(c.command("tab", "map_source", "zed")["ok"])
+        self.assertEqual(sent, [{"op": "source", "source": "zed"}])
+        self.assertEqual(c.camera_snapshot()["map_source"], "voxel")
+        self.assertTrue(c.camera_snapshot()["map_source_pending"])
+        self.assertFalse(c.command("tab", "map_save")["ok"])
+
+        c.camera_report("status", {"level": "info", "text": "Map source changed.", "map_source": "zed"})
+        self.assertEqual(c.camera_snapshot()["map_source"], "zed")
+        self.assertFalse(c.camera_snapshot()["map_source_pending"])
+
     def test_auto_map_builds_only_with_arms_folded(self):
         c = ready_controller()
         sent = []
@@ -171,6 +188,129 @@ class MacMapping(unittest.TestCase):
         c.command("tab", "map_mode", "on")
         self.assertEqual(sent[-1], {"op": "integrate", "on": True})
         self.assertFalse(c.command("tab", "map_mode", "sometimes")["ok"])
+
+
+class MappingPoseGuard(unittest.TestCase):
+    def test_motion_and_quaternion_sign_flips_are_accepted(self):
+        guard = zs.MappingPoseGuard()
+        guard.observe(0, [0, 0, 0], [0, 0, 0, 1])
+        guard.observe(1 / 30, [0.04, 0, 0], [0, 0, 0, -1])
+        self.assertIsNone(guard.fault)
+
+    def test_fast_turn_pauses_until_rotation_settles(self):
+        guard = zs.MappingPoseGuard()
+        guard.observe_rotation(10.0, 70.0)
+        self.assertTrue(guard.turning(10.5))
+        guard.observe_rotation(10.8, 30.0)
+        guard.observe_rotation(11.1, 5.0)
+        self.assertTrue(guard.turning(11.6))
+        self.assertFalse(guard.turning(11.81))
+
+    def test_tracking_snap_back_after_fast_turn_latches(self):
+        guard = zs.MappingPoseGuard()
+        guard.observe_rotation(10.0, 95.0)
+        guard.observe(10.8, [0, 0, 0], [0, 0, 0, 1], 3.0)
+        half_angle = math.radians(17.0) / 2
+        guard.observe(10.83, [0, 0, 0], [0, 0, math.sin(half_angle), math.cos(half_angle)], 3.0)
+        self.assertIn("tracking jumped", guard.fault)
+
+    def test_trace_sized_rotation_pauses_across_sampling_gap(self):
+        guard = zs.MappingPoseGuard()
+        guard.observe(0.0, [0, 0, 0], [0, 0, 0, 1])
+        half_angle = math.radians(26.4) / 2
+        guard.observe(0.537, [0.05, 0, 0], [0, 0, math.sin(half_angle), math.cos(half_angle)])
+        self.assertTrue(guard.turning(0.537))
+
+    def test_recovery_requires_loop_closure_and_stable_anchor(self):
+        guard = zs.MappingPoseGuard()
+        q = [0, 0, 0, 1]
+        guard.observe(0, [0, 0, 0], q, 0)
+        guard.observe(0.03, [1, 0, 0], q, 0)
+        guard.observe(1, [0, 0, 0], q, 0)
+        guard.observe(2.1, [0, 0, 0], q, 0)
+        self.assertIsNotNone(guard.fault)
+        guard.observe(3, [1, 0, 0], q, 0, loop_closed=True)
+        guard.observe(4.1, [1, 0, 0], q, 0)
+        self.assertIsNotNone(guard.fault)
+        for step in range(1, 10):  # drive back at 1 m/s
+            guard.observe(4.1 + step * 0.1, [1 - step * 0.1, 0, 0], q, 0)
+        guard.observe(5, [0.02, 0, 0], q, 0)
+        guard.observe(5.5, [0, 0, 0], q, 0)
+        self.assertIsNotNone(guard.fault)
+        guard.observe(6.1, [0, 0, 0], q, 0)
+        self.assertIsNone(guard.fault)
+
+    def test_recovery_can_use_an_earlier_mapped_view(self):
+        guard = zs.MappingPoseGuard()
+        q = [0, 0, 0, 1]
+        guard.observe(0.0, [0, 0, 0], q, 0)
+        guard.remember_mapped_view()
+        guard.observe(1.0, [0.6, 0, 0], q, 0)
+        guard.remember_mapped_view()
+        guard.observe(1.03, [2.0, 0, 0], q, 0)
+        self.assertIsNotNone(guard.fault)
+        guard.observe(2.0, [0.02, 0, 0], q, 0, loop_closed=True)
+        guard.observe(3.1, [0.02, 0, 0], q, 0)
+        self.assertIsNone(guard.fault)
+
+    def faulted_after_drift(self):
+        guard = zs.MappingPoseGuard()
+        q = [0, 0, 0, 1]
+        guard.observe(0.0, [0, 0, 0], q, 0)
+        guard.remember_mapped_view()
+        guard.observe(0.03, [1.5, 0, 0], q, 0)
+        self.assertIsNotNone(guard.fault)
+        return guard, q
+
+    def test_new_jump_after_recognition_needs_a_fresh_loop_closure(self):
+        guard, q = self.faulted_after_drift()
+        guard.observe(1.0, [1.5, 0, 0], q, 0, loop_closed=True)
+        self.assertTrue(guard.loop_closed)
+        # Tracking drifts again before the robot is back at a mapped view.
+        guard.observe(2.0, [1.5, 0, 0], q, 0)
+        guard.observe(2.03, [0.02, 0, 0], q, 0)
+        self.assertFalse(guard.loop_closed)
+        guard.observe(3.5, [0.02, 0, 0], q, 0)
+        self.assertIsNotNone(guard.fault)
+        guard.observe(4.0, [0.02, 0, 0], q, 0, loop_closed=True)
+        guard.observe(5.1, [0.02, 0, 0], q, 0)
+        self.assertIsNone(guard.fault)
+
+    def test_loop_closure_reported_just_before_its_correction_counts(self):
+        guard, q = self.faulted_after_drift()
+        guard.observe(1.0, [1.5, 0, 0], q, 0)
+        guard.note_loop_closure(1.0, True)
+        guard.observe(1.03, [0.02, 0, 0], q, 0)  # the correction itself
+        self.assertTrue(guard.loop_closed)
+        guard.observe(2.1, [0.02, 0, 0], q, 0)
+        self.assertIsNone(guard.fault)
+
+    def test_loop_closure_on_a_frame_without_ok_tracking_counts(self):
+        guard, q = self.faulted_after_drift()
+        guard.note_loop_closure(1.0, True)  # main loop skips observe() on non-OK frames
+        guard.observe(1.1, [0.02, 0, 0], q, 0)
+        guard.observe(2.2, [0.02, 0, 0], q, 0)
+        self.assertIsNone(guard.fault)
+
+    def test_old_loop_closure_does_not_excuse_a_later_jump(self):
+        guard = zs.MappingPoseGuard()
+        q = [0, 0, 0, 1]
+        guard.observe(0.0, [0, 0, 0], q, 0, loop_closed=True)
+        guard.observe(2.0, [0, 0, 0], q, 0)
+        guard.observe(2.03, [1.5, 0, 0], q, 0)
+        self.assertIsNotNone(guard.fault)
+        self.assertFalse(guard.loop_closed)
+
+    def test_position_or_orientation_jump_latches_until_restart(self):
+        for position, orientation in (([1, 0, 0], [0, 0, 0, 1]),
+                                      ([0, 0, 0], [0, 0, 1, 0])):
+            with self.subTest(position=position, orientation=orientation):
+                guard = zs.MappingPoseGuard()
+                guard.observe(0, [0, 0, 0], [0, 0, 0, 1])
+                guard.observe(1 / 30, position, orientation)
+                self.assertIn("tracking jumped", guard.fault)
+                guard.observe(2 / 30, [0, 0, 0], [0, 0, 0, 1])
+                self.assertIsNotNone(guard.fault)
 
 
 class Protocol(unittest.TestCase):

@@ -42,8 +42,10 @@ MAPPING_BLOCKED = ARM_KEYS.keys() | GRIPPER_KEYS.keys() | {"q", "e"}
 # did, so every speed level stays at or above 49 counts per active axis.
 DRIVE_KEYS = {"w": (1, 0, 0), "s": (-1, 0, 0), "a": (0, 1, 0), "d": (0, -1, 0),
               "left": (0, 0, 1), "right": (0, 0, -1)}
-SPEED_LEVELS = (0.15, 0.20, 0.25)  # m/s per translation axis
-YAW_PER_LINEAR = 2.0               # rad/s per m/s, 0.30 rad/s at the first level
+SPEED_LEVELS = (0.15, 0.20, 0.25)  # base speed levels in m/s
+STRAIGHT_SCALE = 4.80  # straight motion along either axis
+DIAGONAL_LONGITUDINAL_SCALE = 1.20
+YAW_PER_LINEAR = 7.50              # rad/s per base speed level
 MAX_TRANSLATION = 0.30             # m/s cap on diagonal motion
 LINEAR_ACCEL, LINEAR_DECEL = 0.6, 1.5  # m/s^2
 YAW_ACCEL, YAW_DECEL = 1.2, 3.0        # rad/s^2
@@ -70,7 +72,17 @@ BODY_MOTORS = {0: 1, 1: 4, 3: 6}
 BODY_SPEED_LIMIT = 0.20
 REST_SPREAD = 0.012
 REST_RISE = 0.006
-REST_LIFT = 0.10
+# The torso showed about 0.016 rad of steady holding error on hardware.
+REST_TORSO_TOLERANCE = 0.025
+# Largest lift/torso reading accepted right after SDK calibration. On the robot
+# (2026-11-24) the lift read 0.20 SDK units sitting on its bottom stop and the
+# torso 0.059 rad, so the lift allowance is 0.30 (1.5% of travel).
+ZERO_CHECK = {0: 0.30, 1: 0.08}
+# After calibration the lift and torso rest on their stops but read slightly
+# above zero (lift ~0.20, torso ~0.06 rad on the robot). Those readings are the
+# "floor": rest, park, mapping and jogs aim relative to it, never below it,
+# because a target below the floor can never be reached and only pushes the
+# motor into its stop.
 STARTUP_STEPS = (
     ("arms_open", "Arm controllers report feedback"),
     ("body_open", "Body controller opened"),
@@ -91,6 +103,9 @@ def drive_velocity(keys, level=0):
         x += dx * speed
         y += dy * speed
         yaw += dyaw * speed * YAW_PER_LINEAR
+    if not (x and y):
+        return (x * STRAIGHT_SCALE, y * STRAIGHT_SCALE, yaw)
+    x *= DIAGONAL_LONGITUDINAL_SCALE
     scale = max(1.0, math.hypot(x, y) / MAX_TRANSLATION)
     return (x / scale, y / scale, yaw)
 
@@ -427,6 +442,7 @@ class Simulator:
         self.poses = dict(self.HOME)
         self.targets = dict(self.HOME)
         self.position = {0: 0.0, 1: 0.0, 3: 0.30}
+        self.stops = {}  # lowest reachable reading per axis, like the robot's lift and torso stops
         self.body_targets = {}
         self.now = 0.0
         self.homing_at = -math.inf
@@ -454,6 +470,7 @@ class Simulator:
         if self.body:
             for axis, target in self.body_targets.items():
                 self.position[axis] += 0.25 * (target - self.position[axis])
+                self.position[axis] = max(self.stops.get(axis, -math.inf), self.position[axis])
 
     def feedback(self, side, now):
         if side not in self.arms or side in self.withheld:
@@ -542,6 +559,7 @@ class RobotSession:
         self.body_targets = {}
         self.arm_rest = {}
         self.body_rest = {}
+        self.body_floor = {0: 0.0, 1: 0.0}
         self.arm_deadline = None
         self.arm_moving = set()
         self.body_deadlines = {}
@@ -630,19 +648,20 @@ class RobotSession:
             # if the reported position after SDK calibration disagrees.
             quiet = all(axis in self.body_state and self.rig.body_quiet(axis) for axis in (0, 1))
             if self.settled("body", quiet, now):
-                if abs(self.body_state[0]) > 0.10 or abs(self.body_state[1]) > 0.08:
+                if any(abs(self.body_state[axis]) > limit for axis, limit in ZERO_CHECK.items()):
                     self.fault("Lift or torso feedback disagrees with its calibrated zero.", now)
                 else:
+                    self.body_floor = {axis: max(0.0, self.body_state[axis]) for axis in (0, 1)}
                     self.begin_rest(now)
 
     def begin_rest(self, now):
         self.phase = "resting"
         self.resume_phase = "ready"
-        self.say("Moving the arms out and raising the lift slightly.")
+        self.say("Moving the arms out while holding the lift and torso.")
         self.deadline = now + REST_TIMEOUT
         self.settling.clear()
         self.done.update(("arms_open", "body_open", "left_home", "right_home", "body_cal"))
-        self.body_targets.update({0: REST_LIFT, 1: 0.0})
+        self.body_targets.update(self.body_floor)
         self.body_rest = self.body_targets.copy()
         for side, direction in zip(SIDES, (1, -1)):
             x, y, z, *orientation = self.arm_state[side].pose
@@ -662,7 +681,7 @@ class RobotSession:
         self.body_deadlines.clear()
         self.rig.home()
         self.arm_targets = {}
-        self.body_targets.update({0: 0.0, 1: 0.0})
+        self.body_targets.update(self.body_floor)
         self.phase = "parking"
         self.deadline = now + PARK_TIMEOUT
         self.settling.clear()
@@ -680,7 +699,7 @@ class RobotSession:
         self.body_deadlines.clear()
         self.rig.home()
         self.arm_targets = {}
-        self.body_targets[1] = 0.0
+        self.body_targets[1] = self.body_floor[1]
         self.phase = "stowing"
         self.deadline = now + STOW_TIMEOUT
         self.settling.clear()
@@ -688,9 +707,11 @@ class RobotSession:
 
     # Target checks ------------------------------------------------------------
 
-    def body_at(self, axis):
+    def body_at(self, axis, tolerance=None):
+        if tolerance is None:
+            tolerance = BODY_TOLERANCES[axis]
         return (axis in self.body_state and self.rig.body_quiet(axis)
-                and abs(self.body_state[axis] - self.body_targets[axis]) <= BODY_TOLERANCES[axis])
+                and abs(self.body_state[axis] - self.body_targets[axis]) <= tolerance)
 
     def arms_at(self, sides=SIDES):
         return all(self.arm_state.get(side) and self.arm_state[side].at_pose(self.arm_targets[side])
@@ -705,9 +726,18 @@ class RobotSession:
             missing.append("head pitch")
         return missing
 
+    def rest_pending(self):
+        pending = [f"{side} arm" for side in SIDES if not self.arms_at((side,))]
+        for axis, tolerance in ((0, BODY_TOLERANCES[0]), (1, REST_TORSO_TOLERANCE)):
+            if not self.body_at(axis, tolerance):
+                actual = self.body_state.get(axis)
+                reading = "no feedback" if actual is None else f"read {actual:.3f}"
+                pending.append(f"{AXIS_NAMES[axis]} ({reading}, target {self.body_targets[axis]:.3f})")
+        return pending
+
     def check_targets(self, now):
         if self.phase == "resting":
-            if self.settled("rest", self.arms_at() and all(self.body_at(axis) for axis in (0, 1)), now):
+            if self.settled("rest", not self.rest_pending(), now):
                 self.phase = "ready"
                 self.done.add("rest")
                 self.startup_complete = True
@@ -763,7 +793,8 @@ class RobotSession:
                         pending = ", ".join(dict.fromkeys(self.missing_feedback() + waiting))
                         detail = f"Homing timed out ({pending or 'lift or torso settling'})."
                     elif self.phase == "resting":
-                        detail = "The robot did not settle at the resting pose."
+                        pending = ", ".join(self.rest_pending()) or "settle window incomplete"
+                        detail = f"The robot did not settle at the resting pose: {pending}."
                     elif self.phase == "stowing":
                         detail = "The arms did not fold for mapping in time."
                     else:
@@ -773,7 +804,7 @@ class RobotSession:
                 self.fault(str(exc), now)
         try:
             if self.armed and self.rig.wheel_speeds(now) is None:
-                self.block_drive("Wheel feedback lost. Chassis braked. Release Space before retrying.")
+                self.block_drive("Wheel feedback lost. Chassis braked. Release the controls before retrying.")
             self.command = ramp(self.command, self.velocity, dt) if self.armed else ZERO
             self.check_wheels(now)
             self.rig.body_tick(self.body_targets, self.command, self.armed, calibrating=self.phase == "homing")
@@ -838,7 +869,7 @@ class RobotSession:
     def cut_drive(self):
         """Input arrived late. Brake the chassis but keep holding the arms and body."""
         if self.armed or self.velocity != ZERO:
-            self.block_drive("Input delayed. Chassis braked. Release Space before retrying.")
+            self.block_drive("Input delayed. Chassis braked. Release the controls before retrying.")
 
     def freeze(self, now, all_arms=False):
         try:
@@ -986,7 +1017,7 @@ class RobotSession:
         velocity = drive_velocity(keys, speed)
         if self.rig.wheel_speeds(now) is None:
             if velocity != ZERO:
-                self.block_drive("Wheel feedback unavailable. Release Space before retrying.")
+                self.block_drive("Wheel feedback unavailable. Release the controls before retrying.")
                 return
             self.armed = False
         else:
@@ -1049,10 +1080,11 @@ class RobotSession:
             return
         if axis == 3:
             self.body_rest.setdefault(axis, max(0.0, actual))
-        goal = round(self.body_targets.get(axis, max(0.0, actual)) + step, 6)
+        floor = self.body_floor.get(axis, 0.0)
+        goal = round(self.body_targets.get(axis, max(floor, actual)) + step, 6)
         if axis in (0, 1) and step < 0:
-            goal = max(0.0, goal)
-        if not 0.0 <= goal <= maximum or abs(goal - self.body_rest[axis]) > travel + 1e-9:
+            goal = max(floor, goal)
+        if not floor <= goal <= maximum or abs(goal - self.body_rest[axis]) > travel + 1e-9:
             self.say("Body jog limit reached.")
             return
         self.body_targets[axis] = goal
@@ -1099,7 +1131,8 @@ class RobotSession:
         ranges = {}
         for axis, rest in self.body_rest.items():
             maximum, travel = BODY_LIMITS[axis]
-            ranges[AXIS_NAMES[axis]] = [max(0.0, rest - travel), min(maximum, rest + travel)]
+            floor = self.body_floor.get(axis, 0.0)
+            ranges[AXIS_NAMES[axis]] = [max(floor, rest - travel), min(maximum, rest + travel)]
         return {
             "phase": self.phase, "notice": self.notice, "arms": arms,
             "poses": {side: state.pose[:3] for side, state in self.arm_state.items() if state},
@@ -1113,6 +1146,7 @@ class RobotSession:
             "release_required": self.release_required,
             "wheels": self.rig.wheel_speeds(now), "wheel_warning": self.wheel_warning,
             "speed_level": self.speed_level, "speed_levels": SPEED_LEVELS, "yaw_per_linear": YAW_PER_LINEAR,
+            "straight_scale": STRAIGHT_SCALE,
             "selection": self.selection, "drive_mode": self.drive_mode, "resume_phase": self.resume_phase,
             "gripper": self.gripper, "started": bool(self.opened),
             "startup": self.startup_status(), "startup_complete": self.startup_complete,

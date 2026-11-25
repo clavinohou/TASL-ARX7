@@ -37,7 +37,7 @@ class LiftCeiling(unittest.TestCase):
         self.assertLess(LIFT_CEILING, LIFT_SDK_MAX)
         self.assertEqual(BODY_JOG["lift"][4], LIFT_CEILING)
         self.assertEqual(rs.BODY_LIMITS[0][0], LIFT_CEILING)
-        self.assertLessEqual(rs.REST_LIFT, LIFT_CEILING)
+        self.assertLess(rs.ZERO_CHECK[0], LIFT_CEILING)
 
     def test_sdk_never_receives_a_height_above_the_ceiling(self):
         hardware = object.__new__(Hardware)
@@ -58,6 +58,20 @@ class LiftCeiling(unittest.TestCase):
         self.assertIn("limit", h.session.notice)
         self.assertLessEqual(h.session.body_targets[0], LIFT_CEILING)
         self.assertLessEqual(h.session.status(h.now)["body_ranges"]["lift"][1], LIFT_CEILING)
+
+    def test_startup_accepts_the_lift_reading_seen_on_its_bottom_stop(self):
+        # On the robot the lift read 0.20 SDK units right after calibration.
+        rig = rs.Simulator()
+        rig.position[0] = 0.20
+        h = Harness(rig)
+        self.assertTrue(h.until("ready"), h.session.notice)
+
+    def test_startup_refuses_a_lift_reading_far_from_zero(self):
+        rig = rs.Simulator()
+        rig.position[0] = rs.ZERO_CHECK[0] + 0.1
+        h = Harness(rig)
+        self.assertTrue(h.until("fault"), h.session.notice)
+        self.assertIn("calibrated zero", h.session.notice)
 
     def test_jog_console_lift_range_stops_at_the_ceiling(self):
         _, step, _, minimum, maximum = jog.BODY_JOG["lift"]

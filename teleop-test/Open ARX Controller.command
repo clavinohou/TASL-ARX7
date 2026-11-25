@@ -36,8 +36,8 @@ cleanup() {
 trap cleanup EXIT
 printf 'Signing into %s…\n' "$robot"
 if /usr/bin/ssh -fNT -M -S "$socket" -o StrictHostKeyChecking=yes -o UpdateHostKeys=no \
-        -o ConnectTimeout=6 -o NumberOfPasswordPrompts=1 -o ServerAliveInterval=5 \
-        -o ServerAliveCountMax=2 -o ClearAllForwardings=yes -o ForwardAgent=no "$robot"; then
+        -o ConnectTimeout=4 -o ConnectionAttempts=3 -o NumberOfPasswordPrompts=1 -o ServerAliveInterval=5 \
+        -o ServerAliveCountMax=4 -o ClearAllForwardings=yes -o ForwardAgent=no "$robot"; then
     if [[ "${1:-}" == --deploy ]]; then
         deploy_controller
     fi

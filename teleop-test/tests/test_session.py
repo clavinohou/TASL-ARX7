@@ -50,12 +50,22 @@ class Harness:
 class DriveMath(unittest.TestCase):
     def test_turn_and_diagonals_stay_above_the_observed_deadband(self):
         # 49 chassis counts moved the base; 16 did not.
-        self.assertAlmostEqual(drive_velocity({"left"})[2], 0.30)
+        self.assertAlmostEqual(drive_velocity({"left"})[2], 1.125)
         self.assertGreaterEqual(int(drive_velocity({"left"})[2] * 165), 49)
         for level in range(len(rs.SPEED_LEVELS)):
             x, y, _ = drive_velocity({"w", "a"}, level)
             self.assertGreaterEqual(int(min(abs(x), abs(y)) * 330), 49)
             self.assertLessEqual(math.hypot(x, y), rs.MAX_TRANSLATION + 1e-9)
+
+    def test_straight_and_turn_speed_levels(self):
+        for level, speed in enumerate((0.72, 0.96, 1.20)):
+            self.assertAlmostEqual(drive_velocity({"w"}, level)[0], speed)
+            self.assertAlmostEqual(drive_velocity({"s"}, level)[0], -speed)
+            self.assertAlmostEqual(drive_velocity({"a"}, level)[1], speed)
+            self.assertAlmostEqual(drive_velocity({"d"}, level)[1], -speed)
+            yaw = (1.125, 1.50, 1.875)[level]
+            self.assertAlmostEqual(drive_velocity({"left"}, level)[2], yaw)
+            self.assertAlmostEqual(drive_velocity({"right"}, level)[2], -yaw)
 
     def test_opposite_keys_cancel(self):
         self.assertEqual(drive_velocity({"w", "s"}), (0.0, 0.0, 0.0))
@@ -71,7 +81,7 @@ class Startup(unittest.TestCase):
         h = Harness().ready()
         status = h.session.status(h.now)
         self.assertTrue(all(state == "done" for _, state in status["startup"]))
-        self.assertAlmostEqual(h.session.body_targets[0], rs.REST_LIFT)
+        self.assertAlmostEqual(h.session.body_targets[0], h.session.body_floor[0])
         self.assertLess(max(abs(value) for value in status["offsets"]["left"]), 0.5)  # at rest
         self.assertAlmostEqual(h.session.arm_rest["left"][1] - Simulator.HOME["left"][1], rs.REST_SPREAD)
         self.assertAlmostEqual(h.session.arm_rest["right"][1] - Simulator.HOME["right"][1], -rs.REST_SPREAD)
@@ -90,11 +100,11 @@ class Startup(unittest.TestCase):
 class Chassis(unittest.TestCase):
     def test_latched_mode_keeps_drive_mode_until_space_release(self):
         h = Harness().ready()
-        h.run(0.5, deadman=True, keys={"w"})
+        h.run(1.3, deadman=True, keys={"w"})
         self.assertTrue(h.session.armed)
-        self.assertAlmostEqual(h.session.command[0], 0.15)
+        self.assertAlmostEqual(h.session.command[0], 0.72)
         self.assertEqual(h.rig.modes[-1][0], 1)
-        h.run(0.3, deadman=True)  # key released, Space still held
+        h.run(0.55, deadman=True)  # key released, Space still held
         self.assertTrue(h.session.armed)
         self.assertEqual(h.session.command, ZERO)
         self.assertEqual(h.rig.modes[-1], (1, ZERO))
@@ -107,7 +117,7 @@ class Chassis(unittest.TestCase):
         h.run(0.5, deadman=True, keys={"w"})
         h.run(0.06, deadman=True)
         self.assertGreater(h.session.command[0], 0.0)
-        self.assertLess(h.session.command[0], 0.15)
+        self.assertLess(h.session.command[0], 0.72)
         self.assertTrue(h.session.armed)
 
     def test_pulse_mode_brakes_on_key_release(self):
@@ -191,7 +201,7 @@ class Jogs(unittest.TestCase):
     def test_lift_jog_and_limit(self):
         h = Harness().ready()
         h.action("r")
-        self.assertAlmostEqual(h.session.body_targets[0], 0.20)
+        self.assertAlmostEqual(h.session.body_targets[0], 0.10)
         h.run(1.0, deadman=True)
         self.assertNotIn("lift", h.session.status(h.now)["body_moving"])
 

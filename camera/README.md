@@ -37,6 +37,10 @@ python3 ~/zed-setup/zed_check.py
 
 It checks the driver, CUDA, SDK, USB link speed, `pyzed`, and camera detection, then grabs one HD720 frame with NEURAL depth and saves `left.png` and `depth.png` to `~/zed-setup/check/`.
 
+Status, 2026-11-24: everything installed on the new Fanxiang SSD, and all checks pass (camera S/N 15949755, firmware 1523). The first images are in [first-frame/](first-frame/). The NEURAL depth model has already been optimized for the RTX 4070. That one-time step took about 6 minutes.
+
+**The camera is mounted upside down.** Any code that opens it should set `init.camera_image_flip = sl.FLIP_MODE.AUTO`, which lets the IMU decide. Without it the images and the gravity direction used for tracking and mapping are inverted. `zed_check.py` and `teleop-test/zed_stream.py` both set it.
+
 ## USB 3 is required
 
 The ZED Mini's video interface only enumerates on a USB 3 link. Over USB 2 only the HID (IMU) interface (`2b03:f681`) appears, and the SDK limits it to VGA at 30 fps at best. If `zed_check.py` reports USB 2, flip the USB-C plug at the camera end (the Stereolabs cable is orientation-sensitive), and make sure the other end is in a blue/SS port on the robot PC.
